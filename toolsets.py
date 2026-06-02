@@ -54,6 +54,11 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Caduceus dynamic-workflow engine (the Loom). Always present — its
+    # standing opt-in policy (see the tool description) gates usage, mirroring
+    # UltraCode's always-in-harness Workflow tool. Behaviour activates via
+    # /caduceus (the standing reminder + xhigh effort + worker tiering).
+    "Workflow",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -243,6 +248,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "caduceus": {
+        "description": "Caduceus dynamic-workflow engine (the Loom) — deterministic multi-agent orchestration",
+        "tools": ["Workflow"],
         "includes": []
     },
 

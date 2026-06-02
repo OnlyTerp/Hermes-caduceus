@@ -194,6 +194,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
+    # Caduceus standing reminder — placed right after the skills inventory,
+    # mirroring UltraCode's captured request placement. Injected only when the
+    # mode is active AND the Workflow tool is available (so it never references
+    # a missing tool). Toggling the mode busts agent._cached_system_prompt so
+    # this re-renders on the next turn. See agent/caduceus.py.
+    try:
+        from agent.caduceus import standing_reminder_for_prompt as _cad_standing
+        _cad_reminder = _cad_standing(agent)
+        if _cad_reminder:
+            stable_parts.append(_cad_reminder)
+    except Exception:
+        pass
+
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
     # so the agent can correctly report which model it is (workaround for API bug).
