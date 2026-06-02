@@ -10283,6 +10283,18 @@ class HermesCLI:
             self._apply_caduceus_to_agent()
             _cprint(f"  {_ACCENT}✓ Solo — worker == orchestrator.{_RST}")
             _emit_state()
+        elif arg == "effort":
+            from hermes_constants import VALID_REASONING_EFFORTS
+            lvl = rest.strip().lower()
+            if lvl not in VALID_REASONING_EFFORTS and lvl != "none":
+                _cprint(f"  {_DIM}Usage: /caduceus effort <none|low|medium|high|xhigh>{_RST}")
+                _cprint(f"  {_DIM}On MiniMax/Anthropic-wire models this is the thinking-token budget"
+                        f" (xhigh=32k, high=16k, medium=8k, low=4k). Lower = faster start.{_RST}")
+            else:
+                st.effort = lvl
+                self._apply_caduceus_to_agent()
+                _cprint(f"  {_ACCENT}✓ Caduceus effort set to {lvl} (lower = faster).{_RST}")
+                _emit_state()
         elif arg == "budget":
             try:
                 n = int(rest)
