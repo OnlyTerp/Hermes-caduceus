@@ -1930,6 +1930,9 @@ class GatewayRunner:
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session Caduceus on/off overrides from /caduceus. Key: session_key,
+        # Value: bool. Absent = fall back to the persisted caduceus.enabled.
+        self._session_caduceus_enabled: Dict[str, bool] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -12662,6 +12665,39 @@ class GatewayRunner:
             except Exception:
                 pass
 
+    def _apply_caduceus_to_gateway_agent(self, agent, session_key: str) -> None:
+        """Apply the session's Caduceus mode onto a (possibly cached) agent.
+
+        agent_init builds a fresh OFF Caduceus state from config (tiers, budget,
+        reminder cadence). This flips it on/off per the session override (or the
+        persisted ``caduceus.enabled`` default), arming the enter/exit reminder
+        on transitions and overriding ``reasoning_config`` to the Caduceus
+        effort while active.
+        """
+        st = getattr(agent, "caduceus", None)
+        if st is None:
+            return
+        want = self._session_caduceus_enabled.get(session_key)
+        if want is None:
+            try:
+                from hermes_cli.config import load_config_readonly as _lcro
+                want = bool((_lcro().get("caduceus") or {}).get("enabled", False))
+            except Exception:
+                want = False
+        if want and not st.enabled:
+            st.activate()
+        elif not want and st.enabled:
+            st.deactivate()
+        if st.enabled:
+            try:
+                from agent.caduceus import resolve_effort_config
+                eff = resolve_effort_config(st.effort)
+                if eff is not None:
+                    agent.reasoning_config = eff
+            except Exception:
+                pass
+            agent._cached_system_prompt = None
+
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
@@ -17728,6 +17764,12 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            # Caduceus: apply the session's dynamic-workflow mode onto this
+            # agent (overrides reasoning_config to the Caduceus effort when on).
+            try:
+                self._apply_caduceus_to_gateway_agent(agent, session_key)
+            except Exception as _cad_gw_err:
+                logger.debug("Caduceus gateway apply skipped: %s", _cad_gw_err)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

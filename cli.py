@@ -5212,6 +5212,14 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Re-apply the session's Caduceus state across agent rebuilds
+            # (model/effort switches drop self.agent). agent_init builds a
+            # fresh OFF state from config; this restores the live session's
+            # mode, tiers, budget, and xhigh effort onto the new agent.
+            try:
+                self._apply_caduceus_to_agent()
+            except Exception as _cad_apply_err:
+                logger.debug("Caduceus re-apply skipped: %s", _cad_apply_err)
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -8984,6 +8992,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
+        elif canonical == "caduceus":
+            self._handle_caduceus_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -10149,6 +10159,141 @@ class HermesCLI:
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+    def _apply_caduceus_to_agent(self) -> None:
+        """Apply the session's Caduceus state onto the live agent.
+
+        The CLI owns the persistent :class:`CaduceusState` (``self._caduceus``)
+        so the mode survives agent rebuilds. On first call it seeds from config
+        (honoring the persisted ``caduceus.enabled`` default). It then shares
+        that object with ``self.agent.caduceus`` and applies the xhigh effort +
+        system-prompt cache bust when active. ``build_api_kwargs`` reads
+        ``agent.reasoning_config`` live each turn, so effort takes effect with
+        no rebuild.
+        """
+        if not self.agent:
+            return
+        from agent.caduceus import state_from_config, resolve_effort_config
+        st = getattr(self, "_caduceus", None)
+        if st is None:
+            from hermes_cli.config import load_config as _lc
+            try:
+                cfg = _lc()
+            except Exception:
+                cfg = {}
+            st = state_from_config(cfg)
+            # Persist the user's base reasoning preference so /caduceus off can
+            # restore it, then arm the enter reminder if config defaults it on.
+            st._saved_reasoning_config = self.reasoning_config
+            if st.enabled:
+                st._enter_pending = True
+            self._caduceus = st
+        # Share the same state object with the agent.
+        self.agent.caduceus = st
+        if st.enabled:
+            eff = resolve_effort_config(st.effort)
+            if eff is not None:
+                self.agent.reasoning_config = eff
+        else:
+            if st._saved_reasoning_config is not None or st._saved_reasoning_config is None:
+                self.agent.reasoning_config = st._saved_reasoning_config
+        # Bust the cached system prompt so the standing reminder appears/clears.
+        self.agent._cached_system_prompt = None
+
+    def _handle_caduceus_command(self, cmd: str):
+        """Handle /caduceus — toggle Caduceus dynamic-workflow mode.
+
+        Usage:
+            /caduceus                 Show current mode + tiers + budget
+            /caduceus on|off          Activate / deactivate (this session)
+            /caduceus status          Show current state
+            /caduceus orch <model>    Set the orchestrator (heavy) tier
+            /caduceus worker <model>  Set the worker (fast) tier
+            /caduceus solo            Worker == orchestrator (one model runs all)
+            /caduceus budget <tokens> Set a shared output-token ceiling (0 = off)
+
+        Models accept "provider:model" or just "model" (provider inherited).
+        """
+        from agent.caduceus import resolve_effort_config  # noqa: F401
+        from hermes_cli.colors import Colors as _Colors
+        # Make sure we have a live agent + a seeded state object.
+        if not self.agent:
+            self._init_agent()
+        if getattr(self, "_caduceus", None) is None:
+            self._apply_caduceus_to_agent()
+        st = self._caduceus
+
+        def _emit_state():
+            s = st.summary()
+            on = f"{_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}" if s["enabled"] else f"{_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+            _cprint(f"  ⚕ Caduceus: {on}")
+            orch = s["orchestrator"]; work = s["worker"]
+            orch_s = (f"{orch['provider']}:" if orch['provider'] else "") + (orch['model'] or "(session model)")
+            if s["split"]:
+                work_s = (f"{work['provider']}:" if work['provider'] else "") + (work['model'] or "(session model)")
+            else:
+                work_s = "(solo — same as orchestrator)"
+            _cprint(f"  {_DIM}orchestrator:{_RST} {_ACCENT}{orch_s}{_RST}")
+            _cprint(f"  {_DIM}worker:      {_RST} {_ACCENT}{work_s}{_RST}")
+            _cprint(f"  {_DIM}effort: {st.effort}   budget: {s['budget'] if s['budget'] else 'unbounded'}{_RST}")
+
+        parts = cmd.strip().split(maxsplit=2)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _emit_state()
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|orch <model>|worker <model>|solo|budget <n>]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        rest = parts[2].strip() if len(parts) > 2 else ""
+
+        def _parse_tier(text: str) -> dict:
+            text = text.strip()
+            if ":" in text:
+                prov, _, mdl = text.partition(":")
+                return {"provider": prov.strip(), "model": mdl.strip()}
+            return {"provider": "", "model": text}
+
+        if arg in {"on", "enable"}:
+            st.activate()
+            self._apply_caduceus_to_agent()
+            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET} — xhigh effort + standing Workflow opt-in.")
+            _emit_state()
+        elif arg in {"off", "disable"}:
+            st.deactivate()
+            self._apply_caduceus_to_agent()
+            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — back to standard opt-in.")
+        elif arg == "orch":
+            if not rest:
+                _cprint(f"  {_DIM}Usage: /caduceus orch <provider:model | model>{_RST}")
+                return
+            st.orchestrator = _parse_tier(rest)
+            self._apply_caduceus_to_agent()
+            _cprint(f"  {_ACCENT}✓ Orchestrator tier set.{_RST}")
+            _emit_state()
+        elif arg == "worker":
+            if not rest:
+                _cprint(f"  {_DIM}Usage: /caduceus worker <provider:model | model>{_RST}")
+                return
+            st.worker = _parse_tier(rest)
+            self._apply_caduceus_to_agent()
+            _cprint(f"  {_ACCENT}✓ Worker tier set.{_RST}")
+            _emit_state()
+        elif arg == "solo":
+            st.worker = {"provider": "", "model": ""}
+            self._apply_caduceus_to_agent()
+            _cprint(f"  {_ACCENT}✓ Solo — worker == orchestrator.{_RST}")
+            _emit_state()
+        elif arg == "budget":
+            try:
+                n = int(rest)
+                st.budget_tokens = n if n > 0 else None
+                self._apply_caduceus_to_agent()
+                _cprint(f"  {_ACCENT}✓ Budget set to {st.budget_tokens if st.budget_tokens else 'unbounded'}.{_RST}")
+            except (TypeError, ValueError):
+                _cprint(f"  {_DIM}Usage: /caduceus budget <tokens>  (0 = unbounded){_RST}")
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|orch <model>|worker <model>|solo|budget <n>]{_RST}")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

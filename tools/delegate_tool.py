@@ -1076,6 +1076,24 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # Caduceus worker-effort policy. When the parent runs in Caduceus mode the
+    # orchestrator is on xhigh; children would inherit that by default, making
+    # the *worker* tier expensive. Unless the user explicitly set
+    # delegation.reasoning_effort, force the worker tier to its provider default
+    # (fast/cheap) — or the Caduceus effort when apply_effort_to_worker is on.
+    # role='orchestrator' children keep the heavy effort (they plan + delegate).
+    try:
+        from agent import caduceus as _cad_eff
+        _cstate = getattr(parent_agent, "caduceus", None)
+        _explicit_deleg_effort = bool(str(delegation_cfg.get("reasoning_effort") or "").strip())
+        if _cstate is not None and _cstate.enabled and not _explicit_deleg_effort:
+            if effective_role == "orchestrator" or _cstate.apply_effort_to_worker:
+                child_reasoning = _cad_eff.resolve_effort_config(_cstate.effort) or child_reasoning
+            else:
+                child_reasoning = None  # worker uses its provider default, not xhigh
+    except Exception as _cad_eff_err:
+        logger.debug("Caduceus worker-effort policy skipped: %s", _cad_eff_err)
+
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
@@ -1332,6 +1350,118 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+def _resolve_leaf_creds(parent_agent, role: str, model_override, provider_override) -> dict:
+    """Resolve credentials for a single Loom workflow leaf.
+
+    Explicit per-call provider/model override wins; otherwise role-aware
+    Caduceus tiering applies (worker tier for leaves, orchestrator tier for
+    role='orchestrator'), falling back to delegation.* config / parent inherit.
+    """
+    if model_override or provider_override:
+        synthetic = {"provider": provider_override or "", "model": model_override or ""}
+        try:
+            return _resolve_delegation_credentials(synthetic, parent_agent)
+        except Exception as exc:
+            logger.warning("Leaf model override resolution failed (%s); falling back", exc)
+    base = _resolve_delegation_credentials(_load_config(), parent_agent)
+    return _apply_caduceus_tier(base, parent_agent, role)
+
+
+def run_workflow_leaf(
+    parent_agent,
+    prompt: str,
+    *,
+    context: Optional[str] = None,
+    toolsets: Optional[List[str]] = None,
+    role: str = "leaf",
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+    agent_type: Optional[str] = None,
+    callbacks: Optional[Dict[str, Any]] = None,
+    agent_index: int = 0,
+    max_iterations: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run ONE workflow leaf as a delegate child and return its result.
+
+    This is the Loom's single-leaf executor. It reuses the battle-tested child
+    construction (:func:`_build_child_agent`: tiering, toolset restriction,
+    approval handling, credential pool, timeout) and run path
+    (:func:`_run_single_child`: heartbeat, token capture, interrupt), but routes
+    the child's live reasoning/text deltas to the Loom event emitter via
+    ``callbacks`` instead of the parent's subagent.* relay.
+
+    ``callbacks`` may provide ``on_reasoning(text)`` and ``on_text(text)``
+    callables (both tolerant of extra args). Returns a dict with ``text``,
+    ``status``, ``error``, ``input_tokens``, ``output_tokens``, ``model``,
+    ``api_calls``, ``duration_seconds``.
+    """
+    import model_tools as _mt
+
+    creds = _resolve_leaf_creds(parent_agent, role, model_override, provider_override)
+    if max_iterations is None:
+        try:
+            max_iterations = int(_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS))
+        except Exception:
+            max_iterations = DEFAULT_MAX_ITERATIONS
+
+    _saved_tool_names = list(_mt._last_resolved_tool_names)
+    try:
+        child = _build_child_agent(
+            task_index=agent_index,
+            goal=prompt,
+            context=context,
+            toolsets=toolsets,
+            model=creds.get("model"),
+            max_iterations=max_iterations,
+            task_count=1,
+            parent_agent=parent_agent,
+            override_provider=creds.get("provider"),
+            override_base_url=creds.get("base_url"),
+            override_api_key=creds.get("api_key"),
+            override_api_mode=creds.get("api_mode"),
+            override_acp_command=creds.get("command"),
+            override_acp_args=creds.get("args"),
+            role=role,
+        )
+    finally:
+        _mt._last_resolved_tool_names = _saved_tool_names
+
+    child._delegate_saved_tool_names = _saved_tool_names
+
+    # Route live deltas to the Loom emitter. We suppress the default
+    # subagent.* progress relay (set tool_progress_callback=None) so workflow
+    # leaves don't pollute the subagent tree; the Loom emits its own
+    # workflow.agent.* lifecycle around this call.
+    cbs = callbacks or {}
+
+    def _mk(handler):
+        if handler is None:
+            return None
+        def _cb(*args, **kwargs):
+            try:
+                text = args[0] if args else kwargs.get("text", "")
+                handler(text)
+            except Exception:
+                pass
+        return _cb
+
+    child.thinking_callback = _mk(cbs.get("on_reasoning"))
+    child.stream_delta_callback = _mk(cbs.get("on_text"))
+    child.tool_progress_callback = None
+
+    res = _run_single_child(agent_index, prompt, child=child, parent_agent=parent_agent)
+    return {
+        "text": res.get("summary") or "",
+        "status": res.get("status"),
+        "error": res.get("error"),
+        "input_tokens": int(getattr(child, "session_prompt_tokens", 0) or 0),
+        "output_tokens": int(getattr(child, "session_completion_tokens", 0) or 0),
+        "model": res.get("model") or getattr(child, "model", None),
+        "api_calls": int(res.get("api_calls", 0) or 0),
+        "duration_seconds": res.get("duration_seconds", 0),
+    }
 
 
 def _run_single_child(
@@ -2074,26 +2204,30 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Role-aware Caduceus tiering: leaves + plain delegation use the
+            # worker tier; role='orchestrator' children use the orchestrator
+            # tier. No-op when Caduceus is off or the tier is unset.
+            task_creds = _apply_caduceus_tier(creds, parent_agent, effective_role)
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2478,6 +2612,35 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
+
+
+def _apply_caduceus_tier(base_creds: dict, parent_agent, role: str) -> dict:
+    """Role-aware Caduceus tiering for a delegated child.
+
+    When the parent runs in Caduceus mode, override the child's credentials
+    with the orchestrator tier (role='orchestrator') or the worker tier
+    (leaves + plain delegation). Returns ``base_creds`` unchanged when the mode
+    is off or the relevant tier is unset (so the child inherits as before).
+
+    The tier {provider, model} is resolved into a full credential bundle by
+    reusing :func:`_resolve_delegation_credentials` with a synthetic config, so
+    Caduceus tiers go through the exact same runtime-provider resolution path as
+    delegation.* config.
+    """
+    try:
+        from agent import caduceus as _cad
+    except Exception:
+        return base_creds
+    state = getattr(parent_agent, "caduceus", None)
+    tier = _cad.tier_for_role(state, role)
+    if not tier:
+        return base_creds
+    synthetic = {"provider": tier.get("provider") or "", "model": tier.get("model") or ""}
+    try:
+        return _resolve_delegation_credentials(synthetic, parent_agent)
+    except Exception as exc:
+        logger.warning("Caduceus tier resolution failed (%s); using base delegation creds", exc)
+        return base_creds
 
 
 def _load_config() -> dict:

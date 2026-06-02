@@ -33,7 +33,9 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { setCaduceusState } from '@/store/caduceus'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { applyWorkflowEvent } from '@/store/workflow'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -813,6 +815,11 @@ export function useMessageStream({
             event.type
           )
         }
+      } else if (event.type.startsWith('workflow.')) {
+        // Caduceus Loom events drive the Orchestration Theater store.
+        applyWorkflowEvent(event.type, (event.payload ?? {}) as Record<string, unknown>)
+      } else if (event.type === 'caduceus.state') {
+        setCaduceusState((event.payload ?? {}) as Record<string, unknown>)
       } else if (event.type === 'clarify.request') {
         // Surface the clarify tool's overlay. The Python side is blocked on
         // `clarify.respond`, so without this handler the agent would hang

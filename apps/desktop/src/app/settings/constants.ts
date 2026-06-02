@@ -1,6 +1,7 @@
 import {
   Brain,
   type IconComponent,
+  Layers3,
   Lock,
   MessageCircle,
   Mic,
@@ -352,6 +353,23 @@ export const SECTIONS: DesktopConfigSection[] = [
     label: 'Chat',
     icon: MessageCircle,
     keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+  },
+  {
+    id: 'caduceus',
+    label: 'Caduceus',
+    icon: Layers3,
+    keys: [
+      'caduceus.enabled',
+      'caduceus.effort',
+      'caduceus.apply_effort_to_worker',
+      'caduceus.orchestrator.provider',
+      'caduceus.orchestrator.model',
+      'caduceus.worker.provider',
+      'caduceus.worker.model',
+      'caduceus.workflow.max_agents',
+      'caduceus.workflow.auto_escalate',
+      'caduceus.reminders.turns_between_maintenance'
+    ]
   },
   {
     id: 'appearance',

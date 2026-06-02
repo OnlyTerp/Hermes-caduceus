@@ -1692,6 +1692,69 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    # Caduceus — Hermes-native dynamic-workflow mode (the port of Claude
+    # Code's "UltraCode": xhigh effort + a standing Workflow opt-in + an
+    # orchestrator/worker two-model split + the "Loom" workflow engine).
+    # Default-OFF and session-scoped — the /caduceus command (or the desktop
+    # toggle) flips a per-session runtime flag; it does not persist `enabled`
+    # unless the user explicitly saves it. See agent/caduceus.py and
+    # agent/workflow/ for the engine.
+    "caduceus": {
+        # Persisted default for new sessions. The session toggle overrides
+        # this at runtime without rewriting config.
+        "enabled": False,
+        # Abstract effort applied to the orchestrator (and optionally worker)
+        # while the mode is active. Mapped per-provider in
+        # agent/caduceus.py::resolve_effort_config (xhigh -> Anthropic adaptive
+        # thinking + effort, OpenAI/Codex high, others best-effort/no-op).
+        "effort": "xhigh",
+        # Apply the Caduceus effort to worker (delegated) agents too. Off by
+        # default so the fast worker tier stays fast/cheap.
+        "apply_effort_to_worker": False,
+        # The "heavy" main-loop model. Empty = use the session's current model.
+        "orchestrator": {
+            "provider": "",
+            "model": "",
+        },
+        # The "fast" model every workflow leaf / plain delegate runs on.
+        # Empty provider = same as orchestrator (solo); set both to split.
+        "worker": {
+            "provider": "",
+            "model": "",
+        },
+        # The Loom (workflow engine) runtime knobs.
+        "workflow": {
+            # "auto" = min(16, max(2, cpu-2)); an int overrides.
+            "max_concurrency": "auto",
+            # Runaway backstop: total agent() calls across one run.
+            "max_agents": 1000,
+            # null = unbounded; or an int output-token hard ceiling shared
+            # across the main loop + all leaves for the run.
+            "default_budget_tokens": None,
+            # Per-agent wall-clock timeout (seconds); leaves that exceed it
+            # resolve to None (failed->None semantics).
+            "agent_timeout_seconds": 600,
+            # Whole-run wall-clock timeout (seconds); 0 = unbounded.
+            "run_timeout_seconds": 0,
+            # Structured-output validation retries on schema mismatch.
+            "schema_max_retries": 2,
+            # Persist each run's script + per-agent transcripts under the
+            # session dir (enables resume + the Theater timeline scrubber).
+            "persist_scripts": True,
+            # Promote leaves flagged high-difficulty to the orchestrator model.
+            # Off by default (we prioritise latency/determinism).
+            "auto_escalate": False,
+        },
+        # Reminder lifecycle (UltraCode parity).
+        "reminders": {
+            # "full" emits the long enter reminder on activation; "sparse"
+            # only the short maintenance line.
+            "enter": "full",
+            # Cadence (in user turns) for the sparse maintenance reminder.
+            "turns_between_maintenance": 8,
+        },
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

@@ -1047,6 +1047,22 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    # Caduceus (Hermes-native dynamic-workflow mode) session state. Seeded from
+    # the caduceus: config (tiers, budget, reminder cadence) but always created
+    # OFF -- Caduceus is session-scoped and opt-in, so only the orchestrating
+    # surface (CLI/gateway/TUI) activates it (honoring the persisted
+    # caduceus.enabled default). Delegate children never activate it, so they
+    # don't inherit the standing reminder or the Workflow tool.
+    try:
+        from agent.caduceus import state_from_config as _cad_state_from_config
+        agent.caduceus = _cad_state_from_config(_agent_cfg)
+        agent.caduceus.enabled = False
+        agent.caduceus._enter_pending = False
+    except Exception as _cad_err:
+        agent.caduceus = None
+        _ra().logger.debug("Caduceus state init skipped: %s", _cad_err)
+
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

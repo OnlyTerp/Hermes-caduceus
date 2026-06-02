@@ -725,6 +725,30 @@ def run_conversation(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # Caduceus reminder lifecycle (UltraCode parity). Computes the per-turn
+    # meta reminder — enter (on activation), sparse maintenance (every N turns),
+    # exit (on deactivation) — plus the workflow-keyword reminder when the user
+    # literally typed "workflow"/"workflows". Injected into the current user
+    # message (cache-friendly, ephemeral), never the cached system prompt.
+    _caduceus_reminder = ""
+    try:
+        from agent import caduceus as _cad
+        _cad_state = getattr(agent, "caduceus", None)
+        _cad_parts: list[str] = []
+        _lifecycle = _cad.compute_turn_reminder(_cad_state, agent._user_turn_count)
+        if _lifecycle:
+            _cad_parts.append(_lifecycle)
+        if (
+            _cad_state is not None
+            and _cad_state.enabled
+            and _cad.message_has_workflow_keyword(original_user_message)
+        ):
+            _cad_parts.append(_cad.WORKFLOW_KEYWORD_REMINDER)
+        if _cad_parts:
+            _caduceus_reminder = _cad.wrap_reminder("\n\n".join(_cad_parts))
+    except Exception as exc:
+        logger.debug("Caduceus reminder scheduling skipped: %s", exc)
+
     # Main conversation loop
     api_call_count = 0
     final_response = None
@@ -959,6 +983,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if _caduceus_reminder:
+                    _injections.append(_caduceus_reminder)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

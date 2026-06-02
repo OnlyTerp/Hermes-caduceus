@@ -11,6 +11,7 @@ import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusba
 import { cn } from '@/lib/utils'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
+import { $caduceus, openTheater, toggleCaduceus } from '@/store/caduceus'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
@@ -27,6 +28,7 @@ import {
   setModelPickerOpen,
   setYoloActive
 } from '@/store/session'
+import { $workflowRun, workflowActiveCount, workflowIsLive } from '@/store/workflow'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
@@ -84,6 +86,10 @@ export function useStatusbarItems({
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const desktopVersion = useStore($desktopVersion)
+  const caduceus = useStore($caduceus)
+  const workflowRun = useStore($workflowRun)
+  const caduceusLive = workflowIsLive(workflowRun)
+  const caduceusActive = workflowActiveCount(workflowRun)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -320,6 +326,36 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
+        className: caduceusLive
+          ? 'text-sky-300'
+          : caduceus.enabled
+            ? 'text-amber-300'
+            : undefined,
+        detail: caduceusLive
+          ? `${caduceusActive}/${workflowRun?.order.length ?? 0}`
+          : caduceus.enabled
+            ? caduceus.split
+              ? 'split'
+              : 'on'
+            : undefined,
+        icon: <Sparkles className="size-3" />,
+        id: 'caduceus',
+        label: 'Caduceus',
+        onSelect: () => {
+          if (caduceusLive) {
+            openTheater()
+          } else {
+            void toggleCaduceus(activeSessionId)
+          }
+        },
+        title: caduceusLive
+          ? 'Open the Orchestration Theater'
+          : caduceus.enabled
+            ? 'Caduceus is ON — click to turn off (xhigh + Workflow opt-in)'
+            : 'Turn on Caduceus dynamic-workflow mode',
+        variant: 'action'
+      },
+      {
         id: 'model-summary',
         label: (
           <span className="inline-flex min-w-0 items-center gap-0.5">
@@ -349,7 +385,11 @@ export function useStatusbarItems({
       versionItem
     ],
     [
+      activeSessionId,
       busy,
+      caduceus,
+      caduceusActive,
+      caduceusLive,
       contextBar,
       contextUsage,
       currentFastMode,
@@ -362,6 +402,7 @@ export function useStatusbarItems({
       toggleYolo,
       turnStartedAt,
       versionItem,
+      workflowRun,
       yoloActive
     ]
   )

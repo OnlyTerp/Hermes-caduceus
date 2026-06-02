@@ -1882,6 +1882,20 @@ def _on_tool_progress(
     _args: dict | None = None,
     **_kwargs,
 ):
+    if event_type.startswith("workflow."):
+        # Caduceus Loom events feed the Orchestration Theater. Forward them
+        # regardless of the tool-progress toggle (distinct surface). Some
+        # payload keys (e.g. workflow.start's `name`) bind to this function's
+        # positional params, so reconstruct the full payload from them.
+        payload = dict(_kwargs)
+        if name is not None:
+            payload["name"] = name
+        if preview is not None:
+            payload.setdefault("preview", preview)
+        if _args is not None:
+            payload.setdefault("args", _args)
+        _emit(event_type, sid, payload)
+        return
     if not _tool_progress_enabled(sid):
         return
     if event_type == "tool.started" and name:
@@ -2329,6 +2343,89 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
+# Per-session Caduceus runtime state for the desktop. Keyed by sid. Holds the
+# user's session-scoped mode toggle + tier/budget choices so they survive agent
+# rebuilds and are applied onto each (re)built agent via _apply_caduceus.
+_caduceus_state: dict[str, dict] = {}
+
+
+def _caduceus_defaults() -> dict:
+    """Seed Caduceus session settings from the caduceus: config section."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        c = load_config_readonly().get("caduceus") or {}
+    except Exception:
+        c = {}
+    return {
+        "enabled": bool(c.get("enabled", False)),
+        "orchestrator": dict(c.get("orchestrator") or {"provider": "", "model": ""}),
+        "worker": dict(c.get("worker") or {"provider": "", "model": ""}),
+        "budget": (c.get("workflow") or {}).get("default_budget_tokens"),
+        "effort": c.get("effort") or "xhigh",
+    }
+
+
+def _caduceus_session(sid: str) -> dict:
+    st = _caduceus_state.get(sid)
+    if st is None:
+        st = _caduceus_defaults()
+        _caduceus_state[sid] = st
+    return st
+
+
+def _apply_caduceus(sid: str, agent) -> dict:
+    """Apply the session's Caduceus settings onto a (re)built agent.
+
+    Mirrors the CLI's _apply_caduceus_to_agent: copies tiers/budget into the
+    agent's CaduceusState, flips enabled (arming enter/exit reminders), and
+    overrides reasoning_config to the Caduceus effort while active. Returns the
+    resulting summary dict.
+    """
+    settings = _caduceus_session(sid)
+    cstate = getattr(agent, "caduceus", None)
+    if cstate is None:
+        return {"enabled": False}
+    cstate.orchestrator = dict(settings.get("orchestrator") or {"provider": "", "model": ""})
+    cstate.worker = dict(settings.get("worker") or {"provider": "", "model": ""})
+    cstate.effort = settings.get("effort") or "xhigh"
+    budget = settings.get("budget")
+    try:
+        cstate.budget_tokens = int(budget) if budget else None
+    except (TypeError, ValueError):
+        cstate.budget_tokens = None
+    want = bool(settings.get("enabled"))
+    if want and not cstate.enabled:
+        cstate.activate()
+    elif not want and cstate.enabled:
+        cstate.deactivate()
+    if cstate.enabled:
+        try:
+            from agent.caduceus import resolve_effort_config
+            eff = resolve_effort_config(cstate.effort)
+            if eff is not None:
+                agent.reasoning_config = eff
+        except Exception:
+            pass
+    agent._cached_system_prompt = None
+    return cstate.summary()
+
+
+def _apply_caduceus_to_session(sid: str) -> dict:
+    """Apply Caduceus to the session's live agent if one exists; return summary."""
+    sess = _sessions.get(sid) or {}
+    agent = sess.get("agent")
+    if agent is not None:
+        return _apply_caduceus(sid, agent)
+    settings = _caduceus_session(sid)
+    return {
+        "enabled": bool(settings.get("enabled")),
+        "orchestrator": dict(settings.get("orchestrator") or {}),
+        "worker": dict(settings.get("worker") or {}),
+        "budget": settings.get("budget"),
+        "effort": settings.get("effort"),
+    }
+
+
 def _make_agent(sid: str, key: str, session_id: str | None = None):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -2368,7 +2465,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
-    return AIAgent(
+    _agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
@@ -2397,6 +2494,12 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
     )
+    # Apply the session's Caduceus dynamic-workflow mode onto the new agent.
+    try:
+        _apply_caduceus(sid, _agent)
+    except Exception as _cad_err:
+        logger.debug("Caduceus apply (make_agent) skipped: %s", _cad_err)
+    return _agent
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
@@ -6706,6 +6809,67 @@ def _(rid, params: dict) -> dict:
         )
     except Exception as e:
         return _err(rid, 5020, str(e))
+
+
+@method("caduceus.status")
+def _(rid, params: dict) -> dict:
+    """Return the session's Caduceus state (mode, tiers, budget, effort)."""
+    try:
+        sid = params.get("session_id", "")
+        return _ok(rid, _apply_caduceus_to_session(sid))
+    except Exception as e:
+        return _err(rid, 5061, str(e))
+
+
+@method("caduceus.set")
+def _(rid, params: dict) -> dict:
+    """Toggle Caduceus mode for a session (and optionally set the budget)."""
+    try:
+        sid = params.get("session_id", "")
+        settings = _caduceus_session(sid)
+        if "enabled" in params:
+            settings["enabled"] = bool(params.get("enabled"))
+        if "budget" in params:
+            b = params.get("budget")
+            try:
+                settings["budget"] = int(b) if b else None
+            except (TypeError, ValueError):
+                settings["budget"] = None
+        if "effort" in params and params.get("effort"):
+            settings["effort"] = str(params.get("effort"))
+        summary = _apply_caduceus_to_session(sid)
+        _emit("caduceus.state", sid, summary)
+        return _ok(rid, summary)
+    except Exception as e:
+        return _err(rid, 5062, str(e))
+
+
+@method("model.tiers.set")
+def _(rid, params: dict) -> dict:
+    """Set the orchestrator/worker tiers for a session's Caduceus mode.
+
+    Each tier is {"provider": str, "model": str}; omit a tier to leave it.
+    """
+    try:
+        sid = params.get("session_id", "")
+        settings = _caduceus_session(sid)
+        orch = params.get("orchestrator")
+        work = params.get("worker")
+        if isinstance(orch, dict):
+            settings["orchestrator"] = {
+                "provider": str(orch.get("provider") or ""),
+                "model": str(orch.get("model") or ""),
+            }
+        if isinstance(work, dict):
+            settings["worker"] = {
+                "provider": str(work.get("provider") or ""),
+                "model": str(work.get("model") or ""),
+            }
+        summary = _apply_caduceus_to_session(sid)
+        _emit("caduceus.state", sid, summary)
+        return _ok(rid, summary)
+    except Exception as e:
+        return _err(rid, 5063, str(e))
 
 
 @method("model.options")
