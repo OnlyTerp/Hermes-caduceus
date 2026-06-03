@@ -102,6 +102,7 @@ def run_workflow(
     emitter = WorkflowEmitter(emit, run_id)
 
     # Resolve concurrency + budget from Caduceus state / config.
+    cstate = None
     try:
         from agent import caduceus as _cad
         cstate = getattr(parent_agent, "caduceus", None)
@@ -110,6 +111,21 @@ def run_workflow(
     except Exception:
         concurrency = 8
         budget_total = None
+
+    # /local: build the GPU-aware worker gate when local mode is active. Workers
+    # route through it (capped to serving slots, hot-swapped on demand); the
+    # orchestrator stays on the cloud/session model. None when /local is off.
+    local_gate = None
+    try:
+        from agent import caduceus as _cad2
+        from agent.workflow.local_gate import LocalGate
+
+        _mgr = _cad2.local_manager_for(cstate)
+        if _mgr is not None and _mgr.has_models():
+            local_gate = LocalGate(_mgr)
+    except Exception as _lg_exc:  # pragma: no cover - defensive
+        emitter.log(f"local mode unavailable: {_lg_exc}")
+        local_gate = None
     if cfg.get("default_budget_tokens"):
         budget_total = budget_total or cfg.get("default_budget_tokens")
     max_agents = int(cfg.get("max_agents", 1000) or 1000)
@@ -127,7 +143,8 @@ def run_workflow(
     budget = Budget(budget_total)
     journal = Journal(run_dir, resume_cache=resume_cache)
     runner = LeafRunner(parent_agent, emitter, budget, journal, schema_max_retries=schema_retries)
-    scheduler = WorkflowScheduler(runner, emitter, budget, concurrency=concurrency, max_agents=max_agents)
+    scheduler = WorkflowScheduler(runner, emitter, budget, concurrency=concurrency,
+                                  max_agents=max_agents, local_gate=local_gate)
 
     # Resolve + persist source.
     try:

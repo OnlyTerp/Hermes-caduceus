@@ -94,6 +94,26 @@ candidate and never breaks a request.
 
 ---
 
+## Local GPU workers (`/local`)
+
+Run workflow **workers** on models served locally on your GPU; the orchestrator
+stays on your session/cloud model. Caduceus hot-swaps models on demand,
+serializes swaps on the single GPU, and caps parallel fan-out to the loaded
+model's serving slots.
+
+```
+/local            # toggle local workers on/off
+/local on|off     # force on / off
+/local status     # show the local model catalog + what's loaded
+```
+
+Declare your models once under `caduceus.local` and restart. The orchestrator is
+shown the catalog automatically and can tag a leaf with `model="local:<id>"`.
+**Full schema, a worked RTX-5090 (Qwen + Gemma) manifest, and troubleshooting:
+[LOCAL.md](LOCAL.md).**
+
+---
+
 ## Configuration reference (`caduceus:` in config.yaml)
 
 Everything here is **optional** — the defaults are sensible and the mode is one
@@ -117,6 +137,12 @@ switch. These are power-user overrides, not command knobs.
 | `workflow.agent_idle_timeout_seconds` | `240` | Max silence (no streamed tokens / tool progress) before a leaf is killed. |
 | `workflow.worker_result_chars` | `48000` | Per-result spill threshold for leaves (soft context cap). |
 | `workflow.worker_turn_budget_chars` | `96000` | Per-turn aggregate context budget for leaves. |
+| `local.enabled` | `false` | Run workflow workers on local GPU models (`/local`). |
+| `local.default_worker` | `""` | Local model id for untagged leaves (empty = first). |
+| `local.models` | `[]` | Local model catalog (endpoint, profiles, load/unload hooks). See [LOCAL.md](LOCAL.md). |
+| `local.unload_on_off` | `true` | Free VRAM when `/local` turns off. |
+| `local.fallback_to_cloud` | `false` | Fail a leaf on local load error rather than silently using cloud. |
+| `local.load_timeout_seconds` | `180` | Max wait for a model's health after its load hook. |
 | `reminders.turns_between_maintenance` | `8` | Cadence of the "still on" nudge. |
 
 (Delegation parallelism is shared with Hermes's `delegation.max_concurrent_children`.)

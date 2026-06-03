@@ -48,6 +48,7 @@ One switch, three composable layers. Each turns on only when you need it — and
 | **Deep-planning loop** | Plans with a live `todo` list and drives it one step at a time, verifies before claiming done, and right-sizes trivial asks (no ceremony) | `/caduceus on` |
 | **The Loom** | Deterministic async workflow engine — `agent()` / `parallel()` / `pipeline()`, structured output, shared budgets, per-run caching + resume | say **"workflow"** |
 | **Auto Router** | Routes each delegated worker to the cheapest configured model that can do *that* subtask; the orchestrator always keeps your session model | `/caduceus auto on` |
+| **Local GPU workers** | Run workflow workers on local models on your GPU — hot-swapped on demand, parallelized to the model's serving slots; the orchestrator stays on your cloud model | `/local on` |
 
 ### Watch it think — the Orchestration Theater
 
@@ -74,8 +75,9 @@ With many models configured, you don't want to pay frontier prices on trivial su
 </p>
 
 **Docs:** [`docs/caduceus/`](docs/caduceus/) — [install](docs/caduceus/INSTALL.md) ·
-[user guide](docs/caduceus/USER_GUIDE.md) · [design](docs/caduceus/DESIGN.md) ·
-[parity](docs/caduceus/PARITY.md) · [contribution summary](docs/caduceus/PR_DESCRIPTION.md)
+[user guide](docs/caduceus/USER_GUIDE.md) · [local GPU workers](docs/caduceus/LOCAL.md) ·
+[design](docs/caduceus/DESIGN.md) · [parity](docs/caduceus/PARITY.md) ·
+[contribution summary](docs/caduceus/PR_DESCRIPTION.md)
 
 <p align="center">
   <sub>Caduceus ships <b>off</b> — with it off, this fork behaves exactly like upstream Hermes. The full upstream <b>Hermes Agent</b> README (CLI, messaging gateway, and platform docs) follows below.</sub>
