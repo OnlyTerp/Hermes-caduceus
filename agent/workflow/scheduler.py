@@ -50,15 +50,22 @@ def _call_stage(stage: Callable, prev: Any, item: Any, index: int) -> Any:
 
 class WorkflowScheduler:
     def __init__(self, runner: LeafRunner, emitter: WorkflowEmitter, budget: Budget,
-                 *, concurrency: int, max_agents: int, depth: int = 0):
+                 *, concurrency: int, max_agents: int, depth: int = 0,
+                 local_gate: "Optional[Any]" = None):
         self.runner = runner
         self.emitter = emitter
         self.budget = budget
         self.concurrency = max(1, int(concurrency))
         self.max_agents = max(1, int(max_agents))
         self.depth = depth
+        # /local: GPU-aware admission gate for worker leaves (caps fan-out to
+        # serving slots + serializes hot-swaps). None when /local is off.
+        self.local_gate = local_gate
         self._sem = asyncio.Semaphore(self.concurrency)
-        self._executor = ThreadPoolExecutor(max_workers=self.concurrency,
+        # When the gate is active, leaves bypass the semaphore (the gate is the
+        # limiter), so the pool must fit cloud concurrency + local slots.
+        pool = self.concurrency + (local_gate.max_slots if local_gate else 0)
+        self._executor = ThreadPoolExecutor(max_workers=max(1, pool),
                                             thread_name_prefix="loom")
         self._agent_count = 0
         self._current_phase: Optional[str] = None
@@ -110,6 +117,35 @@ class WorkflowScheduler:
             phase=eff_phase, model=model,
         )
         self.emitter.agent_status(agent_id=agent_id, status="queued")
+
+        # /local: route WORKER leaves through the GPU gate (the orchestrator
+        # role stays on the cloud/session model). The gate caps concurrency to
+        # serving slots and serializes hot-swaps, so we bypass the semaphore for
+        # gated leaves (the gate is the limiter). acquire() returns None when no
+        # local model applies → fall through to the normal cloud path.
+        gate = self.local_gate
+        if gate is not None and (opts.get("role") or "leaf") != "orchestrator":
+            creds = await gate.acquire(opts)
+            if creds is not None:
+                gated_opts = dict(opts)
+                gated_opts["_local_creds"] = creds
+                loop = asyncio.get_running_loop()
+                try:
+                    result = await loop.run_in_executor(
+                        self._executor, self.runner.run_blocking,
+                        agent_id, str(prompt), gated_opts, idx,
+                    )
+                except BudgetExceeded:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — leaf failures resolve to None
+                    self.emitter.agent_done(agent_id=agent_id, status="failed", summary=str(exc)[:200])
+                    self.emitter.error(message=str(exc), agent_id=agent_id)
+                    return None
+                finally:
+                    await gate.release()
+                self.emitter.budget(spent=self.budget.spent(), total=self.budget.total)
+                return result
+
         async with self._sem:
             loop = asyncio.get_running_loop()
             try:

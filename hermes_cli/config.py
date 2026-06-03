@@ -1805,6 +1805,37 @@ DEFAULT_CONFIG = {
             # Cadence (in user turns) for the sparse maintenance reminder.
             "turns_between_maintenance": 8,
         },
+        # ── /local — local GPU-served workers ──────────────────────────
+        # When on, workflow WORKERS run on models served locally on the
+        # user's GPU (llama.cpp / any OpenAI-compatible server). The
+        # orchestrator ("brain") always stays on your session/cloud model.
+        # A single GPU is exclusive + VRAM-bounded, so Caduceus loads/unloads
+        # models on demand (hot-swap), serializes swaps, and caps parallel
+        # fan-out to the loaded model's serving slots. Off by default; an empty
+        # `models` list makes /local a no-op. See docs/caduceus/LOCAL.md.
+        "local": {
+            "enabled": False,
+            # Worker model used when a leaf doesn't name one (empty = first model).
+            "default_worker": "",
+            # Unload the loaded model when /local turns off (free VRAM).
+            "unload_on_off": True,
+            # If a local load/health check fails, fall back to the cloud
+            # orchestrator model instead of failing the leaf.
+            "fallback_to_cloud": False,
+            # Seconds to wait for a model's health endpoint after its load hook.
+            "load_timeout_seconds": 180,
+            "health_poll_seconds": 2,
+            # The local model catalog (the "source of truth"). Each entry:
+            #   id, endpoint (…/v1), served_model_name, [api_key, api_mode,
+            #   provider, group, vram_mb, max_context, card, cost,
+            #   reasoning_split, load, unload, status, health], and `profiles`:
+            #   a list of {slots, ctx, picker, default} serving configs
+            #   (slots = parallel requests, ctx = context per slot). Models in
+            #   the same `group` cannot be co-resident (one GPU). The load hook
+            #   receives $LOCAL_PROFILE_PICKER / _SLOTS / _CTX so it can serve
+            #   the requested profile. Example in docs/caduceus/LOCAL.md.
+            "models": [],
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

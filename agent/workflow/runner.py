@@ -84,6 +84,10 @@ class LeafRunner:
 
         provider_override = opts.get("provider")
         toolsets = opts.get("toolsets")
+        # /local mode: the scheduler's GPU gate resolves a local worker's
+        # endpoint+model and stashes the creds bundle here so the leaf targets
+        # the local server directly (bypassing tier/router resolution).
+        creds_override = opts.get("_local_creds")
         total_in = total_out = 0
 
         if schema:
@@ -95,7 +99,7 @@ class LeafRunner:
                     self.parent_agent, full_prompt, toolsets=toolsets, role=role,
                     model_override=model_override, provider_override=provider_override,
                     agent_type=opts.get("agent_type"), callbacks=callbacks,
-                    agent_index=_seq(agent_id),
+                    agent_index=_seq(agent_id), creds_override=creds_override,
                 )
                 total_in += res.get("input_tokens", 0)
                 total_out += res.get("output_tokens", 0)
@@ -120,7 +124,7 @@ class LeafRunner:
                 self.parent_agent, prompt, toolsets=toolsets, role=role,
                 model_override=model_override, provider_override=provider_override,
                 agent_type=opts.get("agent_type"), callbacks=callbacks,
-                agent_index=_seq(agent_id),
+                agent_index=_seq(agent_id), creds_override=creds_override,
             )
             last_res = res
             total_in += res.get("input_tokens", 0)

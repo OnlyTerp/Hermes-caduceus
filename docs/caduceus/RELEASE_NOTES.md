@@ -116,6 +116,16 @@ small, guarded, and a no-op when the mode is off.
   ~half the global default) so a worker's running context stays lean and each
   iteration stays fast. Oversized results still spill to disk and remain
   `read_file`-accessible — only the in-context footprint shrinks.
+- **`/local` — local GPU workers.** Run workflow *workers* on models served
+  locally on your GPU (llama.cpp / any OpenAI-compatible server) while the
+  orchestrator stays on your cloud/session model. Caduceus owns the GPU
+  lifecycle: it **hot-swaps** models on demand, **serializes** swaps on the
+  single GPU, **batches** same-model leaves to minimize swaps, and **caps
+  parallel fan-out to the loaded model's serving slots** (`slots × ctx`
+  profiles). Declare your catalog under `caduceus.local` (self-contained
+  manifest with endpoints, profiles, and load/unload hooks); the orchestrator is
+  shown the catalog and tags leaves with `model="local:<id>"`. Off by default;
+  see [`LOCAL.md`](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/LOCAL.md).
 
 ---
 
@@ -124,6 +134,7 @@ small, guarded, and a no-op when the mode is off.
 [`docs/caduceus/`](https://github.com/OnlyTerp/Hermes-caduceus/tree/caduceus/docs/caduceus) —
 [install](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/INSTALL.md) ·
 [user guide](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/USER_GUIDE.md) ·
+[local GPU workers](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/LOCAL.md) ·
 [design](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/DESIGN.md) ·
 [parity](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/PARITY.md) ·
 [contribution summary](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/PR_DESCRIPTION.md)

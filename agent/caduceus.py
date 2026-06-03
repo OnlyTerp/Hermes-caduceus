@@ -189,6 +189,9 @@ class CaduceusState:
     # Auto Router knobs (caduceus.router) — per-task worker model selection.
     router: Dict[str, Any] = field(default_factory=dict)
 
+    # Local GPU worker knobs (caduceus.local) — /local mode source of truth.
+    local: Dict[str, Any] = field(default_factory=dict)
+
     # Reminder lifecycle config + bookkeeping.
     enter_style: str = "full"
     turns_between_maintenance: int = 8
@@ -239,6 +242,7 @@ def state_from_config(cfg: Optional[Dict[str, Any]]) -> CaduceusState:
     work = dict(c.get("worker") or {})
     wf = dict(c.get("workflow") or {})
     router = dict(c.get("router") or {})
+    local = dict(c.get("local") or {})
     reminders = dict(c.get("reminders") or {})
     budget = wf.get("default_budget_tokens")
     try:
@@ -254,9 +258,33 @@ def state_from_config(cfg: Optional[Dict[str, Any]]) -> CaduceusState:
         budget_tokens=budget,
         workflow=wf,
         router=router,
+        local=local,
         enter_style=str(reminders.get("enter") or "full"),
         turns_between_maintenance=int(reminders.get("turns_between_maintenance") or 8),
     )
+
+
+def local_manager_for(state: Optional[CaduceusState]):
+    """Return the active local GPU model manager, or ``None``.
+
+    Active only when Caduceus is on, ``caduceus.local.enabled`` is true, and at
+    least one local model is declared. Workers route through it; the
+    orchestrator always stays on the session/cloud model.
+    """
+    if state is None or not state.enabled:
+        return None
+    lc = state.local or {}
+    if not lc.get("enabled"):
+        return None
+    try:
+        from agent.local_manager import get_local_manager
+
+        return get_local_manager(lc)
+    except Exception as exc:  # pragma: no cover - defensive
+        import logging
+
+        logging.getLogger(__name__).warning("local manager unavailable: %s", exc)
+        return None
 
 
 def get_state(agent: Any) -> Optional[CaduceusState]:
@@ -351,7 +379,41 @@ def standing_reminder_for_prompt(agent: Any) -> Optional[str]:
     valid = getattr(agent, "valid_tool_names", None) or ()
     if valid and "todo" not in valid:
         return None
-    return STANDING_REMINDER
+    hint = local_workflow_hint(get_state(agent))
+    return STANDING_REMINDER + hint if hint else STANDING_REMINDER
+
+
+def local_workflow_hint(state: Optional[CaduceusState]) -> Optional[str]:
+    """Catalog + guidance for authoring workflows under ``/local``, or None.
+
+    Surfaced to the orchestrator so it can tag worker leaves with
+    ``model="local:<id>"`` and group same-model work (one GPU = one resident
+    model at a time). Returns None when /local is off or no models are declared.
+    """
+    mgr = local_manager_for(state)
+    if mgr is None or not mgr.has_models():
+        return None
+    lines = []
+    for m in mgr.catalog():
+        tag = " (default)" if m.get("default") else ""
+        card = (m.get("card") or "").strip()
+        ctx = m.get("max_context") or 0
+        slots = m.get("max_slots") or 1
+        desc = f" — {card}" if card else ""
+        meta = f" [≤{ctx//1000}k ctx, up to {slots} parallel]" if ctx else f" [up to {slots} parallel]"
+        lines.append(f"  • local:{m['id']}{tag}{desc}{meta}")
+    catalog = "\n".join(lines)
+    return (
+        "\n\n[Local GPU workers active] Workflow WORKERS run on local models on "
+        "this machine's GPU; you (the orchestrator) stay on your current model. "
+        "Pick a worker per leaf with `model=\"local:<id>\"`; omit it to use the "
+        "default. Available local workers:\n"
+        f"{catalog}\n"
+        "Only ONE local model is resident at a time (a single GPU), so the engine "
+        "batches same-model leaves and hot-swaps between models. For throughput: "
+        "group same-model work together, keep each parallel() within one model, "
+        "and match heavier/reasoning leaves to the strongest fit."
+    )
 
 
 # ---------------------------------------------------------------------------

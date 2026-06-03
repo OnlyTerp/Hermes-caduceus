@@ -8994,6 +8994,8 @@ class HermesCLI:
             self._handle_fast_command(cmd_original)
         elif canonical == "caduceus":
             self._handle_caduceus_command(cmd_original)
+        elif canonical == "local":
+            self._handle_local_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -10321,6 +10323,115 @@ class HermesCLI:
         else:
             _cprint(f"  ⚕ Auto Router {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — "
                     f"workers use the session model.")
+
+    def _handle_local_command(self, cmd: str):
+        """Handle /local — run Caduceus workflow workers on local GPU models.
+
+        When on, workflow WORKERS run on models served locally on this machine's
+        GPU (llama.cpp / any OpenAI-compatible server); the orchestrator stays on
+        your session/cloud model. Caduceus loads/unloads models on demand
+        (hot-swap), serializes swaps on the single GPU, and caps parallel fan-out
+        to the loaded model's serving slots. Declare your models under
+        ``caduceus.local`` in config.yaml (see docs/caduceus/LOCAL.md).
+
+        Usage:
+            /local            Toggle local-worker mode on/off
+            /local on|off     Force on / off (this session)
+            /local status     Show the local model catalog + what's loaded
+        """
+        from hermes_cli.colors import Colors as _Colors
+        if not self.agent:
+            self._init_agent()
+        if getattr(self, "_caduceus", None) is None:
+            self._apply_caduceus_to_agent()
+        st = self._caduceus
+        if not isinstance(getattr(st, "local", None), dict):
+            st.local = {}
+        lc = st.local
+
+        def _manager():
+            try:
+                from agent.local_manager import get_local_manager
+                return get_local_manager(lc)
+            except Exception as exc:
+                logger.debug("local manager build failed: %s", exc)
+                return None
+
+        def _emit_state():
+            on = (f"{_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}" if lc.get("enabled")
+                  else f"{_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}")
+            _cprint(f"  ⚕ Local workers: {on}")
+            mgr = _manager()
+            if mgr is None or not mgr.has_models():
+                _cprint(f"  {_DIM}No local models declared. Add them under "
+                        f"caduceus.local.models in config.yaml — see "
+                        f"docs/caduceus/LOCAL.md.{_RST}")
+                return
+            for m in mgr.catalog():
+                tag = " (default)" if m.get("default") else ""
+                ctx = m.get("max_context") or 0
+                meta = f"≤{ctx//1000}k ctx, up to {m.get('max_slots')} parallel" if ctx \
+                    else f"up to {m.get('max_slots')} parallel"
+                card = (m.get("card") or "").strip()
+                _cprint(f"  {_DIM}• local:{m['id']}{tag} — {meta}"
+                        f"{(' — ' + card) if card else ''}{_RST}")
+            loaded = mgr.status().get("loaded")
+            if loaded:
+                _cprint(f"  {_DIM}Loaded now: {loaded['model']} [{loaded['profile']}], "
+                        f"{loaded['slots']} slot(s).{_RST}")
+            else:
+                _cprint(f"  {_DIM}Loaded now: nothing (loads on demand).{_RST}")
+
+        toks = cmd.strip().split()
+        arg = toks[1].strip().lower() if len(toks) > 1 else "toggle"
+
+        if arg == "status":
+            _emit_state()
+            _cprint(f"  {_DIM}Usage: /local [on|off|status]{_RST}")
+            return
+        if arg == "toggle":
+            want = not bool(lc.get("enabled"))
+        elif arg in {"on", "enable"}:
+            want = True
+        elif arg in {"off", "disable"}:
+            want = False
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /local [on|off|status]{_RST}")
+            return
+
+        lc["enabled"] = want
+        try:
+            save_config_value("caduceus.local.enabled", want)
+        except Exception as exc:
+            logger.debug("persist caduceus.local.enabled failed: %s", exc)
+
+        if want:
+            mgr = _manager()
+            n = len(mgr.models()) if mgr else 0
+            _cprint(f"  ⚕ Local workers {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET} — "
+                    f"workflow workers run on your GPU; orchestrator stays on the session model.")
+            if n == 0:
+                _cprint(f"  {_DIM}No local models declared yet — add them under "
+                        f"caduceus.local.models in config.yaml (see docs/caduceus/LOCAL.md), "
+                        f"then restart. Until then /local is a no-op.{_RST}")
+            else:
+                _cprint(f"  {_DIM}{n} local model(s) available; default worker: "
+                        f"{mgr.default_worker_id or '(none)'}.{_RST}")
+            if not st.enabled:
+                _cprint(f"  {_DIM}Note: takes effect inside workflows once Caduceus is on "
+                        f"(/caduceus on) and you say \"workflow\".{_RST}")
+        else:
+            # Free the GPU when turning off, if configured to.
+            if lc.get("unload_on_off", True):
+                mgr = _manager()
+                if mgr is not None:
+                    try:
+                        mgr.unload_all()
+                    except Exception as exc:
+                        logger.debug("local unload_all on /local off failed: %s", exc)
+            _cprint(f"  ⚕ Local workers {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — "
+                    f"workflow workers use the normal (cloud) path.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

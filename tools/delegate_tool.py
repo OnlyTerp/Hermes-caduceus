@@ -1519,6 +1519,7 @@ def run_workflow_leaf(
     callbacks: Optional[Dict[str, Any]] = None,
     agent_index: int = 0,
     max_iterations: Optional[int] = None,
+    creds_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run ONE workflow leaf as a delegate child and return its result.
 
@@ -1536,8 +1537,15 @@ def run_workflow_leaf(
     """
     import model_tools as _mt
 
-    creds = _resolve_leaf_creds(parent_agent, role, model_override, provider_override,
-                                task_text=prompt)
+    # ``creds_override`` (used by /local mode) is an already-resolved credential
+    # bundle for a local GPU worker — base_url/api_key/model/provider/api_mode —
+    # so we bypass tiering/Auto-Router resolution entirely and target the local
+    # endpoint directly. Orchestrator leaves never pass this (they stay cloud).
+    if creds_override:
+        creds = dict(creds_override)
+    else:
+        creds = _resolve_leaf_creds(parent_agent, role, model_override, provider_override,
+                                    task_text=prompt)
     if max_iterations is None:
         try:
             max_iterations = int(_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS))
