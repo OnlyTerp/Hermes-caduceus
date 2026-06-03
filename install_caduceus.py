@@ -310,6 +310,56 @@ def do_uninstall(target: str) -> int:
     return 0
 
 
+def _find_packaged_asar(desktop: str) -> str | None:
+    """Locate a packaged app.asar under apps/desktop/release/*/resources/."""
+    release = os.path.join(desktop, "release")
+    if not os.path.isdir(release):
+        return None
+    for entry in os.listdir(release):
+        asar = os.path.join(release, entry, "resources", "app.asar")
+        if os.path.exists(asar):
+            return asar
+    return None
+
+
+def _repack_asar(asar: str, built_dist: str) -> bool:
+    """Swap the freshly-built renderer `dist/` into a packaged app.asar.
+
+    Uses the standard `@electron/asar` via npx (downloaded on demand). Backs up
+    the original to app.asar.precaduceus.bak (once) + a timestamped copy. Returns
+    True on success. Best-effort — the running app must be CLOSED (it holds a
+    lock on app.asar), so this is for fresh installs / closed apps.
+    """
+    npx = shutil.which("npx")
+    if not npx:
+        warn("npx not found; cannot repack app.asar. The renderer is built at "
+             f"{built_dist} — repack it into {asar} with `@electron/asar`.")
+        return False
+    resources = os.path.dirname(asar)
+    extracted = os.path.join(resources, "_caduceus_asar_extract")
+    bak = asar + ".precaduceus.bak"
+    try:
+        shutil.rmtree(extracted, ignore_errors=True)
+        subprocess.run([npx, "--yes", "@electron/asar", "extract", asar, extracted],
+                       check=True, capture_output=True, text=True)
+        dist_in = os.path.join(extracted, "dist")
+        shutil.rmtree(dist_in, ignore_errors=True)
+        shutil.copytree(built_dist, dist_in)
+        if not os.path.exists(bak):
+            shutil.copy2(asar, bak)
+        shutil.copy2(asar, asar + f".bak-{_ts()}")
+        subprocess.run([npx, "--yes", "@electron/asar", "pack", extracted, asar],
+                       check=True, capture_output=True, text=True)
+        shutil.rmtree(extracted, ignore_errors=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        warn(f"asar repack failed: {(e.stderr or e.stdout or e).strip()[:200]}")
+        return False
+    except OSError as e:
+        warn(f"asar repack failed ({e}). The app may be running (it locks app.asar) — close it and retry.")
+        return False
+
+
 def rebuild_desktop(target: str) -> int:
     desktop = os.path.join(target, "apps", "desktop")
     if not os.path.isdir(desktop):
@@ -320,14 +370,25 @@ def rebuild_desktop(target: str) -> int:
         warn("npm not found on PATH; skipping desktop rebuild. The CLI/TUI works "
              "now; rebuild the desktop manually to get the status-bar toggle + Theater.")
         return 0
-    info("Rebuilding the Electron desktop (npm run build)…")
+    info("Rebuilding the Electron desktop renderer (npm run build)…")
     try:
         subprocess.run([npm, "run", "build"], cwd=desktop, check=True)
     except subprocess.CalledProcessError as e:
         err(f"Desktop build failed ({e}). The backend still works; see "
             "docs/caduceus/IMPLEMENTATION.md to finish the desktop manually.")
         return 1
-    ok("Desktop rebuilt. (If you run the packaged app, repack app.asar — see IMPLEMENTATION.md.)")
+    ok("Desktop renderer built.")
+
+    asar = _find_packaged_asar(desktop)
+    built_dist = os.path.join(desktop, "dist")
+    if asar and os.path.isdir(built_dist):
+        info("Packaged app detected — repacking app.asar with the new UI…")
+        info("(close the Hermes desktop first; a running app locks app.asar.)")
+        if _repack_asar(asar, built_dist):
+            ok("Repacked app.asar (original saved to app.asar.precaduceus.bak).")
+        else:
+            warn("Could not repack automatically — the built renderer is at "
+                 f"{built_dist}. Close Hermes and re-run --with-desktop, or repack manually.")
     return 0
 
 
