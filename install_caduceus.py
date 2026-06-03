@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -322,18 +324,156 @@ def _find_packaged_asar(desktop: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Pure-Python asar repack (no node/npx needed)
+#
+# asar's on-disk format is small and stable, so we read/write it with the
+# standard library and recompute per-file SHA256 integrity (matching
+# @electron/asar) so Electron's optional asar-integrity fuse stays satisfied.
+# This makes --with-desktop work even where `node` is a Windows binary reached
+# from WSL (which breaks the `npx` shim) or where the network is unavailable.
+#
+# Layout (little-endian): u32=4 | u32=len(headerBuf) | u32=4+align4(jsonLen) |
+# u32=jsonLen | <JSON><pad-to-4> | <file data>. Each entry "offset" is relative
+# to the end of the header.
+# ---------------------------------------------------------------------------
+_ASAR_BLOCK = 4 * 1024 * 1024  # 4 MiB, matches @electron/asar
+
+
+def _asar_integrity(data: bytes) -> dict:
+    blocks = [hashlib.sha256(data[i:i + _ASAR_BLOCK]).hexdigest()
+              for i in range(0, len(data) or 1, _ASAR_BLOCK)] or [hashlib.sha256(b"").hexdigest()]
+    return {"algorithm": "SHA256", "hash": hashlib.sha256(data).hexdigest(),
+            "blockSize": _ASAR_BLOCK, "blocks": blocks}
+
+
+def _asar_read(path: str):
+    """Return (header_dict, data_offset, raw_bytes)."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if struct.unpack_from("<I", raw, 0)[0] != 4:
+        raise ValueError("not an asar archive (bad header magic)")
+    header_len = struct.unpack_from("<I", raw, 4)[0]
+    json_len = struct.unpack_from("<I", raw, 12)[0]
+    header = json.loads(raw[16:16 + json_len].decode("utf-8"))
+    return header, 8 + header_len, raw
+
+
+def _asar_collect(node, prefix, raw, data_offset, out):
+    if "files" in node:
+        for name, child in node["files"].items():
+            _asar_collect(child, prefix + "/" + name, raw, data_offset, out)
+    else:
+        off, size = int(node["offset"]), node["size"]
+        out[prefix] = raw[data_offset + off: data_offset + off + size]
+
+
+def _asar_insert(tree: dict, parts, leaf: dict):
+    node = tree
+    for p in parts[:-1]:
+        node = node.setdefault(p, {"files": {}})["files"]
+    node[parts[-1]] = leaf
+
+
+def _asar_write(files: dict, out_path: str) -> str:
+    """files: {"/a/b.js": b"..."} → write a complete asar to out_path + '.tmp'."""
+    tree: dict = {}
+    blobs, offset = [], 0
+    for path, data in sorted(files.items()):
+        _asar_insert(tree, path.strip("/").split("/"),
+                     {"size": len(data), "offset": str(offset), "integrity": _asar_integrity(data)})
+        blobs.append(data)
+        offset += len(data)
+    json_bytes = json.dumps({"files": tree}, separators=(",", ":")).encode("utf-8")
+    aligned = (len(json_bytes) + 3) & ~3
+    header_buf = (struct.pack("<I", 4 + aligned) + struct.pack("<I", len(json_bytes))
+                  + json_bytes + b"\x00" * (aligned - len(json_bytes)))
+    size_buf = struct.pack("<I", 4) + struct.pack("<I", len(header_buf))
+    tmp = out_path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(size_buf)
+        f.write(header_buf)
+        for b in blobs:
+            f.write(b)
+    return tmp
+
+
+def _asar_validate(tmp_path: str, new_dist: str) -> list:
+    """Re-parse the produced asar; assert it is self-consistent + matches dist."""
+    errors = []
+    header, data_offset, raw = _asar_read(tmp_path)
+    files: dict = {}
+    _asar_collect(header, "", raw, data_offset, files)
+    idx = os.path.join(new_dist, "index.html")
+    if os.path.exists(idx) and files.get("/dist/index.html") != open(idx, "rb").read():
+        errors.append("dist/index.html does not match the freshly-built renderer")
+
+    def check(node, prefix=""):
+        if "files" in node:
+            for k, v in node["files"].items():
+                check(v, prefix + "/" + k)
+        else:
+            blob = raw[data_offset + int(node["offset"]): data_offset + int(node["offset"]) + node["size"]]
+            if len(blob) != node["size"]:
+                errors.append(f"{prefix}: truncated blob")
+            elif hashlib.sha256(blob).hexdigest() != node.get("integrity", {}).get("hash"):
+                errors.append(f"{prefix}: integrity hash mismatch")
+    check(header)
+    return errors
+
+
+def _repack_asar_python(asar: str, built_dist: str) -> bool:
+    """Swap `built_dist` into the /dist subtree of `asar` using only stdlib.
+
+    Builds + validates a fresh archive before atomically replacing the original
+    (backed up to app.asar.precaduceus.bak once + a timestamped copy). Returns
+    True on success; the running app must be CLOSED (it locks app.asar)."""
+    header, data_offset, raw = _asar_read(asar)
+    files: dict = {}
+    _asar_collect(header, "", raw, data_offset, files)
+    merged = {p: b for p, b in files.items() if not p.startswith("/dist/")}
+    for root, _dirs, fnames in os.walk(built_dist):
+        for fn in fnames:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, built_dist).replace(os.sep, "/")
+            with open(full, "rb") as fh:
+                merged["/dist/" + rel] = fh.read()
+    tmp = _asar_write(merged, asar)
+    errs = _asar_validate(tmp, built_dist)
+    if errs:
+        os.remove(tmp)
+        warn("pure-Python asar repack produced an inconsistent archive: " + "; ".join(errs[:3]))
+        return False
+    bak = asar + ".precaduceus.bak"
+    if not os.path.exists(bak):
+        shutil.copy2(asar, bak)
+    shutil.copy2(asar, asar + f".bak-{_ts()}")
+    os.replace(tmp, asar)
+    return True
+
+
 def _repack_asar(asar: str, built_dist: str) -> bool:
     """Swap the freshly-built renderer `dist/` into a packaged app.asar.
 
-    Uses the standard `@electron/asar` via npx (downloaded on demand). Backs up
-    the original to app.asar.precaduceus.bak (once) + a timestamped copy. Returns
-    True on success. Best-effort — the running app must be CLOSED (it holds a
-    lock on app.asar), so this is for fresh installs / closed apps.
+    Prefers a self-contained, stdlib-only repack (no node/npx, no network).
+    Falls back to the standard `@electron/asar` via npx if that ever fails.
+    Backs up the original to app.asar.precaduceus.bak (once) + a timestamped
+    copy. Returns True on success. Best-effort — the running app must be CLOSED
+    (it holds a lock on app.asar), so this is for fresh installs / closed apps.
     """
+    try:
+        if _repack_asar_python(asar, built_dist):
+            return True
+    except OSError as e:
+        warn(f"asar repack failed ({e}). The app may be running (it locks app.asar) — close it and retry.")
+        return False
+    except Exception as e:  # noqa: BLE001 — fall through to the npx path
+        warn(f"pure-Python asar repack failed ({e}); trying @electron/asar via npx…")
+
     npx = shutil.which("npx")
     if not npx:
-        warn("npx not found; cannot repack app.asar. The renderer is built at "
-             f"{built_dist} — repack it into {asar} with `@electron/asar`.")
+        warn("npx not found and the built-in repack failed; the renderer is built "
+             f"at {built_dist} — repack it into {asar} with `@electron/asar`.")
         return False
     resources = os.path.dirname(asar)
     extracted = os.path.join(resources, "_caduceus_asar_extract")
