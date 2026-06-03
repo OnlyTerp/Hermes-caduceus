@@ -7,19 +7,20 @@ import { formatTokens } from './theater-format'
 
 export function BudgetGauge({ spent, total }: { spent: number; total: null | number }) {
   const pct = total ? Math.min(100, Math.round((spent / total) * 100)) : 0
-  const tone = pct >= 90 ? 'bg-rose-500' : pct >= 70 ? 'bg-amber-400' : 'bg-emerald-400'
+  const near = pct >= 90
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <div className="flex items-center justify-between text-[0.6rem] text-muted-foreground">
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground">
         <span>Budget</span>
         <span className="tabular-nums">
           {formatTokens(spent)}
-          {total ? ` / ${formatTokens(total)} (${pct}%)` : ' tok · unbounded'}
+          {total ? ` / ${formatTokens(total)} · ${pct}%` : ' tok · unbounded'}
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted-foreground/15">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className={cn('h-full rounded-full transition-all duration-500', total ? tone : 'bg-sky-400/60')}
+          className={cn('h-full rounded-full transition-all duration-500', near ? 'bg-destructive' : 'bg-primary',
+            !total && 'bg-primary/40')}
           style={{ width: total ? `${pct}%` : '100%' }}
         />
       </div>
@@ -28,12 +29,11 @@ export function BudgetGauge({ spent, total }: { spent: number; total: null | num
 }
 
 export function ConcurrencyMeter({ active, cap, queued }: { active: number; cap: number; queued: number }) {
-  const pct = cap ? Math.min(100, Math.round((active / cap) * 100)) : 0
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1">
-      <div className="flex items-center justify-between text-[0.6rem] text-muted-foreground">
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground">
         <span className="inline-flex items-center gap-1">
-          <Activity className="size-2.5" /> Concurrency
+          <Activity className="size-3" /> Concurrency
         </span>
         <span className="tabular-nums">
           {active}/{cap} active{queued > 0 ? ` · ${queued} queued` : ''}
@@ -43,15 +43,10 @@ export function ConcurrencyMeter({ active, cap, queued }: { active: number; cap:
         {Array.from({ length: Math.max(1, cap) }).map((_, i) => (
           <div
             key={i}
-            className={cn(
-              'h-full flex-1 transition-colors duration-300',
-              i < active ? 'bg-sky-400' : 'bg-muted-foreground/15'
-            )}
+            className={cn('h-full flex-1 transition-colors duration-300', i < active ? 'bg-primary' : 'bg-muted')}
           />
         ))}
       </div>
-      {/* keep pct referenced for a11y/title without extra UI */}
-      <span className="sr-only">{pct}% utilized</span>
     </div>
   )
 }
@@ -63,8 +58,8 @@ export function Narrator({ lines }: { lines: WorkflowRun['narrator'] }) {
   }
   return (
     <div className="flex items-center gap-2 truncate text-xs text-muted-foreground">
-      <span className="inline-block size-1.5 shrink-0 rounded-full bg-sky-400 motion-safe:animate-pulse" />
-      <span key={last.at} className="truncate italic motion-safe:animate-in motion-safe:fade-in">
+      <span className="inline-block size-1.5 shrink-0 rounded-full bg-primary motion-safe:animate-pulse" />
+      <span key={last.at} className="truncate motion-safe:animate-in motion-safe:fade-in">
         {last.msg}
       </span>
     </div>
@@ -75,49 +70,40 @@ export function VerifyFeed({ verifies }: { verifies: WorkflowRun['verifies'] }) 
   if (!verifies.length) {
     return null
   }
-  const recent = verifies.slice(-6).reverse()
+  const recent = verifies.slice(-8).reverse()
   return (
-    <div className="flex flex-col gap-1">
-      <div className="text-[0.6rem] uppercase tracking-wide text-muted-foreground/70">Verify duels</div>
-      {recent.map(v => {
-        const confirm = v.votes.filter(x => x.verdict === 'confirm').length
-        const refute = v.votes.filter(x => x.verdict === 'refute').length
-        const real = v.result === 'REAL'
-        return (
-          <div
-            key={`${v.id}-${v.at}`}
-            className="flex items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)/50 px-2 py-1 text-[0.65rem] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2"
-          >
-            <div className="flex gap-0.5">
-              {v.votes.map((vote, i) => (
-                <span
-                  key={i}
-                  className={cn(
-                    'size-2 rounded-full',
-                    vote.verdict === 'confirm' ? 'bg-emerald-400' : 'bg-rose-400'
-                  )}
-                  title={vote.lens}
-                />
-              ))}
-            </div>
-            <span className="min-w-0 flex-1 truncate text-muted-foreground" title={v.id}>
-              {v.id}
-            </span>
-            <span className="tabular-nums text-muted-foreground/70">
-              {confirm}✓ {refute}✗
-            </span>
-            <span
-              className={cn(
-                'inline-flex items-center gap-0.5 rounded px-1.5 py-px text-[0.55rem] font-semibold uppercase',
-                real ? 'bg-emerald-400/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'
-              )}
+    <div className="flex flex-col gap-2">
+      <div className="text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">Verification</div>
+      <div className="flex flex-col gap-1.5">
+        {recent.map(v => {
+          const confirm = v.votes.filter(x => x.verdict === 'confirm').length
+          const refute = v.votes.filter(x => x.verdict === 'refute').length
+          const real = v.result === 'REAL'
+          return (
+            <div
+              key={`${v.id}-${v.at}`}
+              className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[0.7rem] motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2"
             >
-              {real ? <Check className="size-2.5" /> : <X className="size-2.5" />}
-              {real ? 'real' : 'rejected'}
-            </span>
-          </div>
-        )
-      })}
+              <span className="min-w-0 flex-1 truncate text-foreground" title={v.id}>
+                {v.id}
+              </span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {confirm}·{refute}
+              </span>
+              <span
+                className={cn(
+                  'inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[0.6rem] font-medium',
+                  real ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400'
+                       : 'bg-destructive/12 text-destructive'
+                )}
+              >
+                {real ? <Check className="size-2.5" /> : <X className="size-2.5" />}
+                {real ? 'real' : 'rejected'}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -160,24 +146,30 @@ export function PhaseLanes({ orchestratorModel, run }: PhaseLanesProps) {
   }
 
   return (
-    <div className="flex h-full gap-3 overflow-x-auto pb-2">
+    <div className="flex h-full gap-4 overflow-x-auto pb-2">
       {lanes.map(title => {
         const ids = groups.get(title) ?? []
         const done = ids.filter(id => {
           const s = run.agents[id]?.status
           return s === 'done' || s === 'failed' || s === 'skipped'
         }).length
+        const pct = ids.length ? Math.round((done / ids.length) * 100) : 0
         return (
-          <div key={title} className="flex w-60 shrink-0 flex-col gap-2">
-            <div className="flex items-center justify-between border-b border-(--ui-stroke-tertiary) pb-1">
-              <span className="truncate text-[0.65rem] font-semibold uppercase tracking-wide text-foreground/80">
-                {title === UNPHASED ? 'Agents' : title}
-              </span>
-              <span className="shrink-0 text-[0.6rem] tabular-nums text-muted-foreground">
-                {done}/{ids.length}
-              </span>
+          <div key={title} className="flex w-64 shrink-0 flex-col gap-2.5">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="truncate text-xs font-semibold text-foreground">
+                  {title === UNPHASED ? 'Agents' : title}
+                </span>
+                <span className="shrink-0 text-[0.7rem] tabular-nums text-muted-foreground">
+                  {done}/{ids.length}
+                </span>
+              </div>
+              <div className="h-0.5 overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-primary/70 transition-all duration-500" style={{ width: `${pct}%` }} />
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5 overflow-y-auto pr-1">
+            <div className="flex flex-col gap-2 overflow-y-auto pr-1">
               {ids.map(id => (
                 <AgentCard agent={run.agents[id]!} key={id} orchestratorModel={orchestratorModel} />
               ))}

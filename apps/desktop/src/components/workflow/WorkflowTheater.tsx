@@ -47,8 +47,8 @@ export function WorkflowTheater() {
     return (
       <button
         className={cn(
-          'fixed bottom-14 right-4 z-[1200] flex items-center gap-2 rounded-full border border-(--ui-stroke-tertiary)',
-          'bg-(--ui-chat-bubble-background)/90 px-3 py-1.5 text-xs shadow-lg backdrop-blur-md transition-all hover:scale-[1.02]',
+          'fixed bottom-14 right-4 z-[1200] flex items-center gap-2 rounded-full border border-border',
+          'bg-card/95 px-3 py-1.5 text-xs shadow-lg backdrop-blur-md transition-transform hover:scale-[1.02]',
           'motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2'
         )}
         onClick={openTheater}
@@ -57,11 +57,11 @@ export function WorkflowTheater() {
       >
         <span className="relative flex size-2">
           {live && (
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-sky-400/70" />
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
           )}
-          <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-sky-400' : 'bg-emerald-400')} />
+          <span className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-primary' : 'bg-emerald-500')} />
         </span>
-        <Sparkles className="size-3.5 text-amber-300" />
+        <Sparkles className="size-3.5 text-primary" />
         <span className="max-w-[10rem] truncate font-medium text-foreground">{run.name}</span>
         <span className="tabular-nums text-muted-foreground">
           {live ? `${active}/${total}` : `${total} agents`}
@@ -81,24 +81,24 @@ export function WorkflowTheater() {
       />
       <div
         className={cn(
-          'relative flex h-[78vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-(--ui-stroke-tertiary)',
+          'relative flex h-[78vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border',
           'bg-background/95 shadow-2xl backdrop-blur-xl motion-safe:animate-in motion-safe:fade-in motion-safe:zoom-in-95'
         )}
       >
-        {/* gradient header rail */}
-        <div className="relative border-b border-(--ui-stroke-tertiary) bg-gradient-to-r from-amber-500/10 via-transparent to-sky-500/10 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="grid size-7 place-items-center rounded-lg bg-amber-400/15 text-amber-300">
+        {/* header rail */}
+        <div className="relative border-b border-border bg-card px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
               <Sparkles className="size-4" />
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h2 className="truncate text-sm font-semibold text-foreground">{run.name}</h2>
-                <span className="rounded bg-amber-400/15 px-1.5 py-px text-[0.6rem] font-medium uppercase tracking-wide text-amber-300">
-                  ⚕ Caduceus · {caduceus.effort ?? 'high'}
+                <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-px text-[0.62rem] font-medium text-muted-foreground">
+                  Caduceus · {caduceus.effort ?? 'high'}
                 </span>
               </div>
-              {run.description && <p className="truncate text-[0.7rem] text-muted-foreground">{run.description}</p>}
+              {run.description && <p className="truncate text-[0.72rem] text-muted-foreground">{run.description}</p>}
             </div>
             <StatusPill run={run} />
             <span className="flex items-center gap-1 tabular-nums text-xs text-muted-foreground">
@@ -107,16 +107,18 @@ export function WorkflowTheater() {
             </span>
             <button
               aria-label="Close"
-              className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+              className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
               onClick={closeTheater}
               type="button"
             >
               <X className="size-4" />
             </button>
           </div>
-          <div className="mt-2">
-            <Narrator lines={run.narrator} />
-          </div>
+          {run.narrator.at(-1) && (
+            <div className="mt-2.5">
+              <Narrator lines={run.narrator} />
+            </div>
+          )}
         </div>
 
         {/* main stage */}
@@ -137,8 +139,8 @@ export function WorkflowTheater() {
             className={cn(
               'mx-4 mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs',
               run.status === 'error'
-                ? 'border-rose-500/40 bg-rose-500/10 text-rose-200'
-                : 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200'
+                ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
             )}
           >
             {run.status === 'error' ? <X className="size-4 shrink-0" /> : <CheckCircle2 className="size-4 shrink-0" />}
@@ -159,14 +161,14 @@ export function WorkflowTheater() {
         )}
 
         {/* footer meters */}
-        <div className="flex items-center gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-2.5">
-          <span className="flex shrink-0 items-center gap-1 text-[0.65rem] text-muted-foreground">
+        <div className="flex items-center gap-5 border-t border-border bg-card/40 px-4 py-2.5">
+          <span className="flex shrink-0 items-center gap-1.5 text-[0.7rem] text-muted-foreground">
             <Layers3 className="size-3" /> {run.agentCount || total} agents
           </span>
           <ConcurrencyMeter active={active} cap={run.concurrencyCap} queued={queued} />
           <BudgetGauge spent={run.budgetSpent || run.tokensOut} total={run.budgetTotal} />
-          <span className="flex shrink-0 items-center gap-1 text-[0.65rem] text-muted-foreground">
-            <Zap className="size-3 text-amber-300" /> {formatTokens(run.tokensOut)} out
+          <span className="flex shrink-0 items-center gap-1.5 tabular-nums text-[0.7rem] text-muted-foreground">
+            <Zap className="size-3" /> {formatTokens(run.tokensOut)} out
           </span>
         </div>
       </div>
@@ -176,9 +178,9 @@ export function WorkflowTheater() {
 
 function StatusPill({ run }: { run: NonNullable<ReturnType<typeof $workflowRun.get>> }) {
   const map = {
-    complete: { cls: 'bg-emerald-400/15 text-emerald-300', label: 'complete' },
-    error: { cls: 'bg-rose-500/15 text-rose-300', label: 'error' },
-    running: { cls: 'bg-sky-400/15 text-sky-300', label: 'running' }
+    complete: { cls: 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-400', label: 'complete' },
+    error: { cls: 'bg-destructive/12 text-destructive', label: 'error' },
+    running: { cls: 'bg-primary/12 text-primary', label: 'running' }
   } as const
   const s = map[run.status]
   return (
