@@ -2,13 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
+import { CaduceusMenuPanel } from '@/app/shell/caduceus-menu-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Activity, AlertCircle, Clock, Command, Cpu, Hash, Loader2, Sparkles } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { $desktopActionTasks } from '@/store/activity'
-import { $caduceus, openTheater, toggleCaduceus } from '@/store/caduceus'
+import { $caduceus, openTheater } from '@/store/caduceus'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
@@ -89,6 +90,11 @@ export function useStatusbarItems({
       />
     ),
     [gatewayLogLines, gatewayState, inferenceStatus, openCommandCenterSection, statusSnapshot]
+  )
+
+  const caduceusMenuContent = useMemo(
+    () => <CaduceusMenuPanel sessionId={activeSessionId} />,
+    [activeSessionId]
   )
 
   const { bgFailed, bgRunning, subagentsRunning } = useMemo(() => {
@@ -285,26 +291,23 @@ export function useStatusbarItems({
         detail: caduceusLive
           ? `${caduceusActive}/${workflowRun?.order.length ?? 0}`
           : caduceus.enabled
-            ? caduceus.split
-              ? 'split'
-              : 'on'
+            ? [caduceus.split ? 'split' : 'on', caduceus.routerEnabled ? 'auto' : null, caduceus.local.enabled ? 'local' : null]
+                .filter(Boolean)
+                .join(' · ')
             : undefined,
         icon: <Sparkles className="size-3" />,
         id: 'caduceus',
         label: 'Caduceus',
-        onSelect: () => {
-          if (caduceusLive) {
-            openTheater()
-          } else {
-            void toggleCaduceus(activeSessionId)
-          }
-        },
-        title: caduceusLive
-          ? 'Open the Orchestration Theater'
-          : caduceus.enabled
-            ? 'Caduceus is ON — deep planning: a live to-do list, driven methodically. Click to turn off.'
-            : 'Turn on Caduceus — deep planning mode (say "workflow" to fan out to parallel subagents)',
-        variant: 'action'
+        // Live → click opens the Theater; idle → click opens the toggle popover
+        // (Caduceus mode · Auto Router · Local workers).
+        ...(caduceusLive
+          ? { onSelect: () => openTheater(), title: 'Open the Orchestration Theater', variant: 'action' as const }
+          : {
+              menuClassName: 'w-64',
+              menuContent: caduceusMenuContent,
+              title: 'Caduceus — mode, Auto Router, and Local GPU workers',
+              variant: 'menu' as const
+            })
       },
       {
         detail: currentProvider || '',
@@ -318,11 +321,11 @@ export function useStatusbarItems({
       versionItem
     ],
     [
-      activeSessionId,
       busy,
       caduceus,
       caduceusActive,
       caduceusLive,
+      caduceusMenuContent,
       contextBar,
       contextUsage,
       currentModel,
