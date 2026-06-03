@@ -17,42 +17,59 @@ export function formatElapsed(ms: number): string {
   return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `${r}s`
 }
 
-/** Tailwind classes for an agent status ring/badge. */
-export function statusRing(status: WorkflowAgentStatus): string {
+// One restrained palette built on the app's design tokens: `primary` is the
+// single "active" accent, success is a muted emerald, failure is `destructive`,
+// and everything idle is neutral (`border`/`muted-foreground`). No competing
+// amber/sky/violet, no gradients — the Theater should read like the rest of the
+// app, not a toy.
+
+/** Left status bar accent for an agent card. */
+export function statusBar(status: WorkflowAgentStatus): string {
   switch (status) {
-    case 'queued':
-      return 'border-(--ui-stroke-tertiary) text-muted-foreground'
     case 'running':
-      return 'border-sky-400/70 text-sky-300'
     case 'streaming':
-      return 'border-sky-400 text-sky-200 shadow-[0_0_14px_-2px_var(--tw-shadow-color)] shadow-sky-500/40'
+      return 'bg-primary'
     case 'done':
-      return 'border-emerald-400/70 text-emerald-300'
+      return 'bg-emerald-500'
     case 'failed':
-      return 'border-rose-500/70 text-rose-300'
+      return 'bg-destructive'
     case 'skipped':
-      return 'border-(--ui-stroke-tertiary) text-muted-foreground/60'
-    default:
-      return 'border-(--ui-stroke-tertiary) text-muted-foreground'
+      return 'bg-border'
+    default: // queued
+      return 'bg-muted-foreground/30'
   }
 }
 
+/** Card border/emphasis for an agent's status. */
+export function statusRing(status: WorkflowAgentStatus): string {
+  switch (status) {
+    case 'running':
+    case 'streaming':
+      return 'border-primary/40'
+    case 'failed':
+      return 'border-destructive/40'
+    case 'done':
+    case 'queued':
+    case 'skipped':
+    default:
+      return 'border-border'
+  }
+}
+
+/** Small status dot. */
 export function statusDot(status: WorkflowAgentStatus): string {
   switch (status) {
-    case 'queued':
-      return 'bg-muted-foreground/50'
     case 'running':
-      return 'bg-sky-400 animate-pulse'
     case 'streaming':
-      return 'bg-sky-300 animate-pulse'
+      return 'bg-primary animate-pulse'
     case 'done':
-      return 'bg-emerald-400'
+      return 'bg-emerald-500'
     case 'failed':
-      return 'bg-rose-500'
+      return 'bg-destructive'
     case 'skipped':
       return 'bg-muted-foreground/30'
-    default:
-      return 'bg-muted-foreground/50'
+    default: // queued
+      return 'bg-muted-foreground/40'
   }
 }
 
