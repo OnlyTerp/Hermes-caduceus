@@ -1,3 +1,46 @@
+<!-- CADUCEUS:BEGIN -->
+# Caduceus ⚕ — deep-planning mode + multi-agent workflows for Hermes
+
+> **A fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) that adds Caduceus.**
+> One switch turns Hermes into a senior-engineer planner: it drives a visible
+> to-do plan, raises reasoning effort, delegates where it helps, and escalates
+> to a deterministic multi-agent **workflow engine** (the *Loom*) when you ask.
+> An optional **Auto Router** sends each delegated worker to the cheapest model
+> that can do that subtask.
+>
+> *Off by default · session-scoped · additive · fully reversible · fully tested.*
+
+### Install in one command
+
+```bash
+git clone -b caduceus https://github.com/OnlyTerp/Hermes-caduceus.git
+python3 Hermes-caduceus/install_caduceus.py --with-desktop   # safe, reversible overlay
+```
+
+Then restart Hermes and run **`/caduceus on`**. The installer auto-detects your
+Hermes install, backs up every file it touches, and can be fully undone with
+`--uninstall`. Pure-Python stdlib — nothing to `pip`, and the desktop repack
+needs no `node`/`npx`.
+
+### What you get
+
+| Layer | What it does | How to use |
+|---|---|---|
+| **Deep-planning loop** | Plans with a live `todo` list and drives it one step at a time, verifies before claiming done, and right-sizes trivial asks (no ceremony) | `/caduceus on` |
+| **The Loom** | Deterministic async workflow engine — `agent()` / `parallel()` / `pipeline()`, structured output, shared budgets, per-run caching + resume | say **"workflow"** |
+| **Auto Router** | Routes each delegated worker to the cheapest configured model that can do *that* subtask; the orchestrator always keeps your session model | `/caduceus auto on` |
+
+Workflow progress streams live to the desktop **Orchestration Theater**.
+
+**Docs:** [`docs/caduceus/`](docs/caduceus/) — [install](docs/caduceus/INSTALL.md) ·
+[user guide](docs/caduceus/USER_GUIDE.md) · [design](docs/caduceus/DESIGN.md) ·
+[parity](docs/caduceus/PARITY.md) · [contribution summary](docs/caduceus/PR_DESCRIPTION.md)
+
+<sub>Caduceus ships <b>off</b>. With it off, this fork behaves exactly like upstream Hermes — the full upstream README follows below.</sub>
+
+---
+<!-- CADUCEUS:END -->
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
