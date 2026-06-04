@@ -463,7 +463,12 @@ def do_uninstall(target: str) -> int:
             if os.path.exists(dst):
                 os.remove(dst)
                 removed += 1
-    ok(f"Uninstalled Caduceus: restored {restored} original file(s), removed {removed} added file(s).")
+    # The packaged app.asar is rewritten in place by --with-desktop and is not
+    # in the text-file manifest, so revert it from its own stock backup here.
+    asar_reverted = _restore_packaged_asar(target)
+    suffix = ", reverted the packaged app.asar to stock" if asar_reverted else ""
+    ok(f"Uninstalled Caduceus: restored {restored} original file(s), "
+       f"removed {removed} added file(s){suffix}.")
     info("Restart Hermes (and rebuild the desktop if you rebuilt it for Caduceus).")
     return 0
 
@@ -493,6 +498,46 @@ def _find_packaged_asar(desktop: str) -> str | None:
         if os.path.exists(asar):
             return asar
     return None
+
+
+def _restore_packaged_asar(target: str) -> int:
+    """Revert a Caduceus-repacked ``app.asar`` to its pre-Caduceus original.
+
+    A ``--with-desktop`` / ``--repack-only`` install rewrites the packaged
+    ``app.asar`` in place and stashes the stock archive at
+    ``app.asar.precaduceus.bak``. That backup is NOT part of the text-file
+    restore manifest, so uninstall must handle it here: copy the stock archive
+    back over ``app.asar`` and drop the timestamped ``.bak-<ts>`` snapshots. The
+    desktop app must be closed (it locks ``app.asar``). Best-effort — returns the
+    number of archives reverted (0 when there is no desktop bundle or no backup).
+    """
+    desktop = os.path.join(target, "apps", "desktop")
+    asar = _find_packaged_asar(desktop)
+    if not asar:
+        return 0
+    bak = asar + ".precaduceus.bak"
+    if not os.path.exists(bak):
+        return 0
+    try:
+        shutil.copy2(bak, asar)
+        os.remove(bak)
+    except OSError as e:
+        warn(f"Could not restore stock app.asar ({e}). The desktop app may be "
+             "running (it locks app.asar) — close it and re-run --uninstall.")
+        return 0
+    # Clean up the timestamped repack snapshots left next to the archive.
+    resources, base = os.path.dirname(asar), os.path.basename(asar)
+    try:
+        for entry in os.listdir(resources):
+            if entry.startswith(base + ".bak-"):
+                try:
+                    os.remove(os.path.join(resources, entry))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    info(f"Restored stock app.asar at {asar}")
+    return 1
 
 
 # ---------------------------------------------------------------------------

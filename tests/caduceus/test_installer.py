@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -64,3 +65,42 @@ def test_find_packaged_asar_detects_macos_app_bundle(tmp_path):
     asar.write_bytes(b"asar")
 
     assert installer._find_packaged_asar(str(desktop)) == str(asar)
+
+
+def test_uninstall_restores_packaged_asar(tmp_path, capsys):
+    """--uninstall must revert a --with-desktop install's app.asar to stock.
+
+    app.asar is rewritten in place (not in the text-file manifest), so uninstall
+    has to restore it from app.asar.precaduceus.bak and clean the timestamped
+    snapshots — otherwise the desktop stays on the Caduceus renderer forever.
+    """
+    target = tmp_path / "target"
+    resources = (
+        target / "apps" / "desktop" / "release" / "mac-arm64"
+        / "Hermes.app" / "Contents" / "Resources"
+    )
+    resources.mkdir(parents=True)
+    asar = resources / "app.asar"
+    asar.write_bytes(b"CADUCEUS-RENDERER")          # current (repacked) archive
+    (resources / "app.asar.precaduceus.bak").write_bytes(b"STOCK-RENDERER")  # stock backup
+    (resources / "app.asar.bak-20260101-000000").write_bytes(b"snapshot")    # timestamped copy
+
+    # A valid (empty) text-file backup snapshot so do_uninstall proceeds.
+    snap = target / installer.BACKUP_ROOT / "20260101-000000"
+    snap.mkdir(parents=True)
+    (snap / installer.RESTORE_MANIFEST).write_text(json.dumps({"entries": []}), encoding="utf-8")
+
+    rc = installer.do_uninstall(str(target))
+
+    assert rc == 0
+    assert asar.read_bytes() == b"STOCK-RENDERER"                     # reverted to stock
+    assert not (resources / "app.asar.precaduceus.bak").exists()      # backup consumed
+    assert not (resources / "app.asar.bak-20260101-000000").exists()  # snapshot cleaned
+    assert "reverted the packaged app.asar to stock" in capsys.readouterr().out
+
+
+def test_uninstall_without_desktop_is_a_noop_for_asar(tmp_path):
+    """A backend-only target (no packaged app.asar) reverts nothing and is safe."""
+    target = tmp_path / "target"
+    target.mkdir()
+    assert installer._restore_packaged_asar(str(target)) == 0

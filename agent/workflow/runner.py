@@ -74,7 +74,7 @@ class LeafRunner:
         self.emitter.agent_tokens(agent_id=agent_id, input_tokens=in_tok, output_tokens=out_tok)
         self.emitter.agent_done(agent_id=agent_id, status=status, summary=_summarize(value),
                                 input_tokens=in_tok, output_tokens=out_tok, ms=ms)
-        self.journal.record(key, prompt=prompt, phase=phase, result=value, status="done",
+        self.journal.record(key, prompt=prompt, phase=phase, result=value, status=status,
                             tokens={"in": in_tok, "out": out_tok}, label=label)
         return value
 

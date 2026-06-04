@@ -1675,11 +1675,11 @@ DEFAULT_CONFIG = {
                                        # raise if children time out before producing output.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
-        "max_concurrent_children": 6,  # max parallel children per batch; floor of 1 enforced, no ceiling.
-                                       # Raised from 3 for more parallel throughput (Caduceus fans work
-                                       # out aggressively). Each child consumes API tokens independently,
-                                       # so cost/rate-limit pressure scales ~linearly — lower it if you
-                                       # hit provider limits. Big fan-out should use the Loom (Workflow).
+        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling.
+                                       # Each child consumes API tokens independently, so cost/rate-limit
+                                       # pressure scales ~linearly — raise it if you want more throughput
+                                       # and your provider limits allow. Big fan-out should use the Loom
+                                       # (Workflow), which manages its own concurrency cap.
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
         # warning log if out of range.
