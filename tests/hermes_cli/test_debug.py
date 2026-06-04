@@ -280,7 +280,7 @@ class TestCaptureLogSnapshot:
 
 # A vendor-prefixed token used across redaction tests. Long enough to clear
 # the redactor's `floor` parameter so it actually masks rather than fully blanks.
-_REDACT_FIXTURE_TOKEN = "sk-proj-A1B2C3D4E5F6G7H8I9J0aA"
+_REDACT_FIXTURE_TOKEN = "sk-proj-" + "A1B2C3D4E5F6G7H8I9J0aA"
 
 
 class TestCaptureLogSnapshotRedaction:
@@ -1330,7 +1330,7 @@ class TestBuildDebugShare:
     def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
         from hermes_cli.debug import build_debug_share
 
-        secret = "sk-proj-SUPERSECRETtoken1234567890"
+        secret = "sk-proj-" + "SUPERSECRETtoken1234567890"
         (hermes_home / "logs" / "agent.log").write_text(
             f"line one\nauthorization token={secret}\nline three\n"
         )
