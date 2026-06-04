@@ -49,7 +49,14 @@ class LeafRunner:
         label = opts.get("label") or (prompt[:48] + ("…" if len(prompt) > 48 else ""))
         model_override = opts.get("model")
         role = opts.get("role") or "leaf"
-        key = call_key(prompt, opts, phase, call_index)
+        # Resume-stable index: the scheduler assigns ``_occurrence`` (k-th call
+        # sharing a signature) synchronously in program order, so it survives
+        # parallel/pipeline reordering. Fall back to the global spawn index only
+        # for direct callers that predate the scheduler wiring.
+        occurrence = opts.get("_occurrence")
+        if occurrence is None:
+            occurrence = call_index
+        key = call_key(prompt, opts, phase, occurrence)
 
         # Resume cache hit → instant replay.
         hit, cached = self.journal.lookup(key)
@@ -74,7 +81,11 @@ class LeafRunner:
         self.emitter.agent_tokens(agent_id=agent_id, input_tokens=in_tok, output_tokens=out_tok)
         self.emitter.agent_done(agent_id=agent_id, status=status, summary=_summarize(value),
                                 input_tokens=in_tok, output_tokens=out_tok, ms=ms)
-        self.journal.record(key, prompt=prompt, phase=phase, result=value, status="done",
+        # Record the REAL status. A failed leaf must not be cached as a
+        # permanent ``done``/``None`` — load_resume_cache() only restores
+        # successful leaves, so a transient failure re-runs live on resume
+        # instead of poisoning the rest of the workflow with a stale None.
+        self.journal.record(key, prompt=prompt, phase=phase, result=value, status=status,
                             tokens={"in": in_tok, "out": out_tok}, label=label)
         return value
 

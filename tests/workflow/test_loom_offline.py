@@ -224,3 +224,125 @@ async def main():
     cached = sum(1 for e in events if e[0] == "workflow.agent.done" and e[1].get("cached"))
     assert cached == 2
     assert r2.stats["tokens"] == 0  # no new tokens on a full cache hit
+
+
+# ── B1/B2/B3 regression tests: the "5-hour run restarted from step 1" bug ──
+
+def test_auto_resume_without_explicit_id():
+    """Re-invoking the SAME script in the SAME session auto-resumes — no
+    resumeFromRunId needed. This is the fix for a re-invocation after a failed
+    run replaying all ~200 subagents from scratch (the token bonfire)."""
+    script = '''
+meta = {"name":"ar","description":"auto-resume"}
+async def main():
+    a = await agent("step one")
+    b = await agent("step two")
+    return [a, b]
+'''
+    r1 = _run(script)
+    assert r1.ok
+    events = []
+    r2 = _run(script, events=events)  # NOTE: no resume= passed
+    assert r2.ok and r2.result == r1.result
+    assert r2.stats["tokens"] == 0          # nothing re-ran
+    assert r2.stats["resumed_from"] == r1.run_id
+    assert r2.stats["replayed_leaves"] == 2
+    cached = sum(1 for e in events if e[0] == "workflow.agent.done" and e[1].get("cached"))
+    assert cached == 2
+
+
+def test_auto_resume_skips_when_script_changed():
+    """A different script must NOT auto-resume off an unrelated prior run."""
+    s1 = 'meta={"name":"a","description":"d"}\nasync def main():\n    return await agent("alpha task")\n'
+    s2 = 'meta={"name":"a","description":"d"}\nasync def main():\n    return await agent("beta task")\n'
+    r1 = _run(s1)
+    assert r1.ok
+    r2 = _run(s2)
+    assert r2.ok
+    assert r2.stats["resumed_from"] is None
+    assert r2.stats["tokens"] > 0           # beta actually ran
+
+
+def test_auto_resume_can_be_disabled():
+    script = 'meta={"name":"a","description":"d"}\nasync def main():\n    return await agent("only step")\n'
+    r1 = _run(script)
+    assert r1.ok
+    r2 = _run(script, cfg={"auto_resume": False})
+    assert r2.ok
+    assert r2.stats["resumed_from"] is None
+    assert r2.stats["tokens"] > 0           # re-ran because auto-resume off
+
+
+def test_parallel_fanout_resumes_fully():
+    """B3: identical fan-out calls resume to a 100% cache hit. The old global
+    spawn-order key could miss under parallel/pipeline reordering."""
+    script = '''
+meta = {"name":"fan","description":"parallel identical"}
+async def main():
+    outs = await parallel([(lambda i=i: agent("same prompt")) for i in range(8)])
+    return {"n": sum(1 for x in outs if x)}
+'''
+    r1 = _run(script)
+    assert r1.ok and r1.result["n"] == 8
+    events = []
+    r2 = _run(script, events=events)
+    assert r2.ok and r2.result["n"] == 8
+    assert r2.stats["tokens"] == 0          # all 8 replayed from cache
+    cached = sum(1 for e in events if e[0] == "workflow.agent.done" and e[1].get("cached"))
+    assert cached == 8
+
+
+def test_call_key_is_occurrence_keyed_not_spawn_order():
+    from agent.workflow.journal import call_key, call_signature
+    opts = {"model": "m", "schema": None, "label": "ignored"}
+    # Whitespace-normalized prompt + occurrence are what matter.
+    assert call_key("do  X", opts, "P", 0) == call_key("do X", opts, "P", 0)
+    # Different occurrence → different key (the k-th identical twin).
+    assert call_key("do X", opts, "P", 0) != call_key("do X", opts, "P", 1)
+    # Signature ignores label / non-result opts but honors model + phase.
+    assert call_signature("p", {"label": "a"}, "P") == call_signature("p", {"label": "b"}, "P")
+    assert call_signature("p", {"model": "m1"}, "P") != call_signature("p", {"model": "m2"}, "P")
+    assert call_signature("p", {}, "P1") != call_signature("p", {}, "P2")
+
+
+def test_failed_leaf_not_cached_reruns_on_resume():
+    """A transient failure must re-run live on resume, not be pinned as a
+    permanent None (the old code journaled every leaf as status='done')."""
+    state = {"fail_next": True}
+
+    def flaky(parent_agent, prompt, **kw):
+        if "boom" in prompt and state["fail_next"]:
+            state["fail_next"] = False
+            return {"text": "", "status": "failed", "input_tokens": 1, "output_tokens": 1}
+        return {"text": f"ok:{prompt[:10]}", "status": "completed",
+                "input_tokens": 5, "output_tokens": 5}
+
+    dt.run_workflow_leaf = flaky
+    try:
+        script = '''
+meta = {"name":"fl","description":"flaky"}
+async def main():
+    good = await agent("step good")
+    bad = await agent("step boom")
+    return {"good": good, "bad": bad}
+'''
+        r1 = _run(script)
+        assert r1.ok and r1.result["bad"] is None       # failed → None first time
+        r2 = _run(script)                                # auto-resume
+        assert r2.ok
+        assert r2.result["good"] == r1.result["good"]    # success replayed from cache
+        assert r2.result["bad"] == "ok:step boom"        # failure re-ran and succeeded
+    finally:
+        dt.run_workflow_leaf = _fake_leaf
+
+
+def test_failure_payload_points_to_resume_not_rewrite():
+    """B1: the Workflow tool's failure guidance must carry the runId so the
+    model resumes instead of restarting from scratch."""
+    import tools.workflow_tool as wt
+    parent = _make_parent()
+    bad_js = 'meta={"name":"x","description":"y"}\nasync def main():\n    f = (z => z)\n    return 1\n'
+    out = json.loads(wt.workflow_tool(script=bad_js, parent_agent=parent))
+    assert out["success"] is False
+    assert "resume" in out and out["runId"] in out["resume"]
+    assert "fix" in out  # syntax-flavored error still gets the Python hint

@@ -133,6 +133,7 @@ switch. These are power-user overrides, not command knobs.
 | `router.candidates` | `[]` | `{model, provider, cost, supports_images, card}` list. |
 | `workflow.max_concurrency` | `auto` | Loom parallelism (`auto` = `min(16, cpu-2)`). |
 | `workflow.max_agents` | `1000` | Runaway backstop. |
+| `workflow.auto_resume` | `true` | Re-invoking the same script in a session replays completed subagents from cache instead of restarting from step 1. |
 | `workflow.agent_timeout_seconds` | `1800` | Per-leaf absolute ceiling (streaming-aware). |
 | `workflow.agent_idle_timeout_seconds` | `240` | Max silence (no streamed tokens / tool progress) before a leaf is killed. |
 | `workflow.worker_result_chars` | `48000` | Per-result spill threshold for leaves (soft context cap). |

@@ -66,6 +66,53 @@ def _load_saved_workflow(name: str) -> Optional[str]:
     return None
 
 
+def _source_fingerprint(source: str) -> str:
+    """Stable hash of a workflow's source — identity for auto-resume matching."""
+    import hashlib
+    norm = "\n".join(line.rstrip() for line in (source or "").splitlines())
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_resumable_run(sess_dir: Optional[str], fingerprint: str,
+                        exclude_run_id: str) -> Optional[str]:
+    """Most-recent prior run in this session whose script matches *fingerprint*.
+
+    Auto-resume: when the orchestrator re-invokes the same workflow (same
+    session, same script) after a failure or partial run, we transparently
+    reuse the newest prior run that has a journal, so completed leaves replay
+    from cache instead of re-running. Returns a run_id or None.
+    """
+    if not sess_dir or not os.path.isdir(sess_dir):
+        return None
+    candidates = []
+    try:
+        entries = os.listdir(sess_dir)
+    except OSError:
+        return None
+    for rid in entries:
+        if rid == exclude_run_id or not rid.startswith("wf_"):
+            continue
+        rdir = os.path.join(sess_dir, rid)
+        journal_path = os.path.join(rdir, "journal.jsonl")
+        fp_path = os.path.join(rdir, "fingerprint.txt")
+        if not (os.path.isfile(journal_path) and os.path.isfile(fp_path)):
+            continue
+        try:
+            with open(fp_path, encoding="utf-8") as f:
+                if f.read().strip() != fingerprint:
+                    continue
+            # Skip empty journals (nothing to resume from).
+            if os.path.getsize(journal_path) <= 0:
+                continue
+            candidates.append((os.path.getmtime(journal_path), rid))
+        except OSError:
+            continue
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _resolve_source(script: Optional[str], name: Optional[str], script_path: Optional[str]) -> str:
     if script_path:
         with open(script_path, encoding="utf-8") as f:
@@ -133,12 +180,36 @@ def run_workflow(
     schema_retries = int(cfg.get("schema_max_retries", 2) or 0)
     persist = bool(cfg.get("persist_scripts", True))
 
+    auto_resume = bool(cfg.get("auto_resume", True))
+
     # Session dir + script persistence + resume.
     sess_dir = _session_workflows_dir(parent_agent) if persist else None
     run_dir = os.path.join(sess_dir, run_id) if sess_dir else None
+
+    # Resolve source first — auto-resume needs to fingerprint it before we build
+    # the journal.
+    try:
+        source = _resolve_source(script, name, script_path)
+    except (SandboxError, OSError) as exc:
+        emitter.error(message=str(exc))
+        return WorkflowResult(run_id=run_id, ok=False, error=str(exc))
+
+    fingerprint = _source_fingerprint(source)
+
+    # Resume cache: an explicit resumeFromRunId wins; otherwise auto-resume from
+    # the most recent prior run of the SAME script in this session, so a
+    # re-invocation after a failed/partial run replays completed leaves from
+    # cache instead of restarting from step 1 (the token-bonfire bug).
     resume_cache: Dict[str, Any] = {}
-    if resume_from and sess_dir:
-        resume_cache = load_resume_cache(sess_dir, resume_from)
+    resumed_from = None
+    if sess_dir:
+        target = resume_from
+        if not target and auto_resume:
+            target = _find_resumable_run(sess_dir, fingerprint, run_id)
+        if target:
+            resume_cache = load_resume_cache(sess_dir, target)
+            if resume_cache:
+                resumed_from = target
 
     budget = Budget(budget_total)
     journal = Journal(run_dir, resume_cache=resume_cache)
@@ -146,22 +217,26 @@ def run_workflow(
     scheduler = WorkflowScheduler(runner, emitter, budget, concurrency=concurrency,
                                   max_agents=max_agents, local_gate=local_gate)
 
-    # Resolve + persist source.
-    try:
-        source = _resolve_source(script, name, script_path)
-    except (SandboxError, OSError) as exc:
-        emitter.error(message=str(exc))
-        return WorkflowResult(run_id=run_id, ok=False, error=str(exc))
+    if resumed_from:
+        emitter.log(
+            f"⚕ auto-resume: replaying {len(resume_cache)} completed leaf(s) "
+            f"from {resumed_from} (same script, same session)"
+        )
 
+    # Persist source + fingerprint (the latter lets future runs auto-resume us).
     persisted_path = script_path
-    if run_dir and not script_path:
+    if run_dir:
         try:
             os.makedirs(run_dir, exist_ok=True)
-            persisted_path = os.path.join(run_dir, "script.py")
-            with open(persisted_path, "w", encoding="utf-8") as f:
-                f.write(source)
+            with open(os.path.join(run_dir, "fingerprint.txt"), "w", encoding="utf-8") as f:
+                f.write(fingerprint)
+            if not script_path:
+                persisted_path = os.path.join(run_dir, "script.py")
+                with open(persisted_path, "w", encoding="utf-8") as f:
+                    f.write(source)
         except Exception:
-            persisted_path = None
+            if not script_path:
+                persisted_path = None
 
     # Nested workflow() support (one level), sharing this run's scheduler.
     async def _nested(name_or_ref: Any, child_args: Any, sched: WorkflowScheduler) -> Any:
@@ -239,6 +314,8 @@ def run_workflow(
         "ms": ms,
         "concurrency": concurrency,
         "budget_total": budget.total,
+        "resumed_from": resumed_from,
+        "replayed_leaves": len(resume_cache),
     }
 
     if "error" in result_holder:

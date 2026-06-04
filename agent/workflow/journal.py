@@ -2,11 +2,14 @@
 
 Every ``agent()`` result is written to
 ``<session_dir>/workflows/<run_id>/journal.jsonl``, keyed by a stable hash of
-``(normalized_prompt, opts, phase, call_index)``. When a run is resumed
-(``Workflow(scriptPath, resumeFromRunId=...)``), the journal of the prior run is
-loaded and the longest unchanged prefix of ``agent()`` calls returns cached
-results instantly; the first edited/new call and everything after runs live.
-Same script + same args ⇒ 100% cache hit.
+``(normalized_prompt, opts, phase, occurrence)`` where ``occurrence`` is the
+k-th call sharing that signature (assigned in program order, NOT global spawn
+order — so resume survives ``parallel()`` / ``pipeline()`` reordering). When a
+run is resumed — explicitly via ``Workflow(resumeFromRunId=...)`` or
+automatically when the same script re-runs in the same session — the prior
+run's journal is loaded and unchanged ``agent()`` calls return cached results
+instantly; the first edited/new call and everything after runs live.
+Same script + same args ⇒ 100% cache hit, even across fan-out.
 
 Per-agent transcripts are written as ``agent-<id>.jsonl`` so the desktop
 timeline scrubber can replay a run.
@@ -28,12 +31,35 @@ def _stable_dumps(obj: Any) -> str:
         return str(obj)
 
 
-def call_key(prompt: str, opts: Dict[str, Any], phase: Optional[str], call_index: int) -> str:
-    """Deterministic cache key for one ``agent()`` call."""
+# Opts that change the *result* of a leaf and therefore participate in its
+# cache identity. Spawn order / agent id deliberately do NOT — see call_key.
+_KEYED_OPT_FIELDS = ("schema", "model", "provider", "agent_type", "isolation")
+
+
+def call_signature(prompt: str, opts: Dict[str, Any], phase: Optional[str]) -> str:
+    """Order-independent identity of an ``agent()`` call.
+
+    Two calls with the same normalized prompt, result-affecting opts, and phase
+    share a signature regardless of when they were spawned. This is what makes
+    resume survive ``parallel()`` / ``pipeline()`` fan-out, where the asyncio
+    interleaving (and thus global spawn order) is not stable across runs.
+    """
     norm = " ".join((prompt or "").split())
-    # Only opts that affect the result participate in the key.
-    keyed_opts = {k: opts.get(k) for k in ("schema", "model", "agent_type", "isolation") if opts.get(k) is not None}
-    payload = _stable_dumps([norm, keyed_opts, phase or "", call_index])
+    keyed_opts = {k: opts.get(k) for k in _KEYED_OPT_FIELDS if opts.get(k) is not None}
+    return _stable_dumps([norm, keyed_opts, phase or ""])
+
+
+def call_key(prompt: str, opts: Dict[str, Any], phase: Optional[str], occurrence: int) -> str:
+    """Deterministic cache key for one ``agent()`` call.
+
+    ``occurrence`` is the 0-based index of this call *among calls that share its
+    signature* (not the global spawn counter). N identical fan-out calls — e.g.
+    ``adversarial_verify``'s skeptics — are interchangeable, so mapping the k-th
+    identical call to the k-th cached result is correct no matter which physical
+    task finished first. This is the fix for resume cache-misses under parallel
+    fan-out: a re-run that issues the same set of calls reproduces the same keys.
+    """
+    payload = call_signature(prompt, opts, phase) + "#" + str(int(occurrence))
     return "a_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
 
 

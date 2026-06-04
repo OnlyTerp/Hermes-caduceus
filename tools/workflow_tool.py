@@ -56,8 +56,11 @@ WORKFLOW_SCHEMA = {
             "resumeFromRunId": {
                 "type": "string",
                 "description": (
-                    "Run id of a prior Workflow invocation to resume from. Unchanged agent() "
-                    "calls return cached results instantly; the first edited/new call runs live."
+                    "Run id of a prior Workflow invocation to resume from. Usually unnecessary: "
+                    "re-invoking the SAME script in the same session AUTO-RESUMES from the most "
+                    "recent matching run, so completed subagents replay from cache for free. Pass "
+                    "this only to force-pin a specific run's journal. Unchanged agent() calls "
+                    "return cached results instantly; the first edited/new call runs live."
                 ),
                 "pattern": "^wf_[a-z0-9-]{6,}$",
             },
@@ -142,25 +145,45 @@ def workflow_tool(
     }
     if res.script_path:
         payload["scriptPath"] = res.script_path
+    replayed = (res.stats or {}).get("replayed_leaves") or 0
+    resumed_from = (res.stats or {}).get("resumed_from")
     if not res.ok:
         payload["error"] = res.error
-        # Actionable one-shot fix so the model corrects a bad script immediately
-        # instead of abandoning the workflow.
-        payload["fix"] = (
-            "Scripts are PYTHON, not JavaScript. Use this exact shape and re-call Workflow:\n"
-            "meta = {\"name\": \"...\", \"description\": \"...\", \"phases\": [{\"title\": \"...\"}]}\n"
-            "async def main():\n"
-            "    phase(\"...\")\n"
-            "    out = await agent(\"<prompt>\", label=\"...\", phase=\"...\")\n"
-            "    return {\"result\": out}\n"
-            "No const/let/var, no `=>` (use `lambda x:` or `async def`), no imports, no markdown fences."
+        # CRITICAL: re-invoking the SAME script in this session auto-resumes from
+        # this run's journal — completed subagents replay from cache, only the
+        # failed/remaining work runs live. Do NOT rewrite the script from scratch
+        # or you forfeit the cache and re-run everything (huge token waste).
+        payload["resume"] = (
+            f"To finish this run, re-invoke Workflow with the SAME script (or "
+            f"scriptPath={res.script_path!r}). Completed subagents auto-resume from "
+            f"cache; pass resumeFromRunId={res.run_id!r} to force-pin this run's "
+            f"journal. Only fix the specific failing part — keep everything else "
+            f"byte-for-byte identical so its cache keys still match."
         )
+        # Syntax fix only when the error looks like a compile/sandbox problem.
+        err_l = (res.error or "").lower()
+        if any(t in err_l for t in ("sandbox", "syntax", "javascript", "compile", "invalid")):
+            payload["fix"] = (
+                "Scripts are PYTHON, not JavaScript. Use this exact shape and re-call Workflow:\n"
+                "meta = {\"name\": \"...\", \"description\": \"...\", \"phases\": [{\"title\": \"...\"}]}\n"
+                "async def main():\n"
+                "    phase(\"...\")\n"
+                "    out = await agent(\"<prompt>\", label=\"...\", phase=\"...\")\n"
+                "    return {\"result\": out}\n"
+                "No const/let/var, no `=>` (use `lambda x:` or `async def`), no imports, no markdown fences."
+            )
     if res.ok:
-        payload["note"] = (
+        note = (
             "Workflow complete. Read `result` and decide the next phase. To iterate, "
-            "edit the script at `scriptPath` and re-invoke with that scriptPath; to "
-            "resume after an edit, also pass resumeFromRunId=<runId>."
+            "edit the script at `scriptPath` and re-invoke with that scriptPath — "
+            "unchanged subagents auto-resume from cache, so only edited/new work re-runs."
         )
+        if replayed:
+            note = (
+                f"Workflow complete (auto-resumed {replayed} subagent(s) from "
+                f"{resumed_from}, so they cost no new tokens). " + note
+            )
+        payload["note"] = note
     try:
         return json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:

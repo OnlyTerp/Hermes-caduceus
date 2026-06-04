@@ -68,6 +68,11 @@ class WorkflowScheduler:
         self._executor = ThreadPoolExecutor(max_workers=max(1, pool),
                                             thread_name_prefix="loom")
         self._agent_count = 0
+        # Per-signature spawn counter → the k-th call sharing a signature gets
+        # occurrence k. Assigned synchronously at spawn (before any await), so
+        # it's deterministic in program order and stable across re-runs, which
+        # is what lets resume cache-hit under parallel()/pipeline() fan-out.
+        self._sig_occurrence: dict[str, int] = {}
         self._current_phase: Optional[str] = None
         self._phase_index = 0
         self._run_prefix = (emitter.run_id or "wf").replace("wf_", "")[:6]
@@ -111,6 +116,13 @@ class WorkflowScheduler:
             "provider": provider, "isolation": isolation, "agent_type": agent_type,
         }
         opts.update(extra)
+        # Resolve the resume-stable cache index NOW (synchronously, before any
+        # await) so program order — not asyncio completion order — decides it.
+        from .journal import call_signature
+        sig = call_signature(str(prompt), opts, eff_phase)
+        occurrence = self._sig_occurrence.get(sig, 0)
+        self._sig_occurrence[sig] = occurrence + 1
+        opts["_occurrence"] = occurrence
         self.emitter.agent_spawn(
             agent_id=agent_id,
             label=label or (str(prompt)[:48] + ("…" if len(str(prompt)) > 48 else "")),

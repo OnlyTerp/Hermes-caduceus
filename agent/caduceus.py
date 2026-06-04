@@ -157,7 +157,7 @@ DEFAULT TO pipeline(); reach for parallel() only for a real barrier. Concurrency
 
 Standard pure builtins + the `json` and `math` modules are available. `time`, `random`, and wall-clock are NOT (they break resume) — pass timestamps via `args`, stamp after return, vary randomness by index.
 
-To iterate or resume: the result includes a runId and the persisted scriptPath. Edit that file and re-invoke with {"scriptPath": ..., "resumeFromRunId": ...} — unchanged agent() calls return cached results instantly; the first edited/new call runs live. Same script + same args = 100% cache hit."""
+To iterate or resume: the result includes a runId and the persisted scriptPath. Re-invoking the SAME script in this session AUTO-RESUMES from the most recent matching run — completed subagents replay from cache for free, only edited/new/failed work runs live. So if a run fails partway, just re-invoke the same script (fix only the broken part); never rebuild it from scratch or you forfeit the cache and re-run everything. Pass resumeFromRunId only to force-pin a specific run. Same script + same args = 100% cache hit, even across parallel()/pipeline() fan-out."""
 
 
 # ---------------------------------------------------------------------------

@@ -178,6 +178,9 @@ caduceus:
     default_budget_tokens: null  # null = unbounded; or an int hard-ceiling
     isolation_default: none      # none | worktree
     persist_scripts: true        # write each run's script under the session dir
+    auto_resume: true            # re-invoking the same script in a session
+                                 # replays completed leaves from cache instead
+                                 # of restarting from step 1
   reminders:
     enter: full                  # full | sparse
     turns_between_maintenance: 8 # sparse reminder cadence (UltraCode parity)
