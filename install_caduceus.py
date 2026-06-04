@@ -40,12 +40,14 @@ import sys
 # different version can clobber that version's changes to the shared core files
 # (cli.py, run_agent.py, ...). We warn (not block) since every write is backed up.
 BUILT_FOR_VERSION = "0.15.1"
-BASE_COMMIT = "b34ee8074"
+BASE_COMMIT = "bd12b3c2321b591d6c924ee9b62b52667a314dd0"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The Caduceus change set (relative paths). New modules + modified core files +
-# desktop + docs + tests. Generated from `git diff --name-only <base>..caduceus`.
+# desktop + docs + tests. Generated from `git diff --name-only <base>..caduceus`
+# (base = BASE_COMMIT). Repo-meta (the installer itself, the top-level README,
+# .github/ CI, scripts/caduceus_verify.sh) is intentionally NOT overlaid.
 MANIFEST = [
     # New, isolated modules (the bulk of the feature)
     "agent/caduceus.py",
@@ -74,6 +76,8 @@ MANIFEST = [
     "gateway/run.py",
     "hermes_cli/commands.py",
     "hermes_cli/config.py",
+    "hermes_cli/model_switch.py",
+    "hermes_cli/models.py",
     "model_tools.py",
     "run_agent.py",
     "toolsets.py",
@@ -105,11 +109,23 @@ MANIFEST = [
     "docs/caduceus/eval/parity_eval.py",
     "docs/caduceus/eval/auto_router_selftest.py",
     "docs/caduceus/eval/ab_compare.py",
+    "docs/caduceus/assets/caduceus-architecture.png",
+    "docs/caduceus/assets/caduceus-architecture.svg",
+    "docs/caduceus/assets/caduceus-hero.png",
+    "docs/caduceus/assets/caduceus-hero.svg",
+    "docs/caduceus/assets/caduceus-loom.png",
+    "docs/caduceus/assets/caduceus-loom.svg",
+    "docs/caduceus/assets/caduceus-router.png",
+    "docs/caduceus/assets/caduceus-router.svg",
+    "docs/caduceus/assets/caduceus-theater.png",
+    "docs/caduceus/assets/caduceus-theater.svg",
     "tests/caduceus/__init__.py",
     "tests/caduceus/test_caduceus_state.py",
     "tests/caduceus/test_auto_router.py",
     "tests/caduceus/test_route_worker_model.py",
     "tests/caduceus/test_local_mode.py",
+    "tests/hermes_cli/test_user_providers_model_switch.py",
+    "tests/tools/test_delegate_leaf_streaming_timeout.py",
     "tests/workflow/__init__.py",
     "tests/workflow/test_loom_offline.py",
 ]
@@ -118,12 +134,13 @@ MANIFEST = [
 _MODIFIED_CORE = {
     "agent/agent_init.py", "agent/agent_runtime_helpers.py", "agent/conversation_loop.py",
     "agent/system_prompt.py", "agent/tool_executor.py", "cli.py", "gateway/run.py",
-    "hermes_cli/commands.py", "hermes_cli/config.py", "model_tools.py", "run_agent.py",
+    "hermes_cli/commands.py", "hermes_cli/config.py", "hermes_cli/model_switch.py",
+    "hermes_cli/models.py", "model_tools.py", "run_agent.py",
     "toolsets.py", "tools/delegate_tool.py", "tui_gateway/server.py",
     "apps/desktop/src/app/session/hooks/use-message-stream.ts",
     "apps/desktop/src/app/settings/constants.ts", "apps/desktop/src/app/shell/app-shell.tsx",
     "apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx",
-    "apps/desktop/src/store/workflow.ts",
+    "tests/hermes_cli/test_user_providers_model_switch.py",
 }
 
 BACKUP_ROOT = ".caduceus-backups"
@@ -186,6 +203,59 @@ def is_hermes_install(path: str) -> bool:
     return all(os.path.exists(os.path.join(path, f)) for f in ("run_agent.py", "cli.py", "toolsets.py"))
 
 
+def _git(target: str, *args: str) -> str | None:
+    """Run `git -C target <args>`; return stripped stdout, or None on any error
+    (not a repo, git missing, command failed). Best-effort — never raises."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        out = subprocess.run([git, "-C", target, *args],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def commit_skew(target: str) -> tuple[str, int] | None:
+    """Compare the target's git HEAD against this build's BASE_COMMIT.
+
+    The version string (pyproject) is too coarse: a target can read the same
+    version as BUILT_FOR_VERSION yet sit hundreds of commits past BASE_COMMIT
+    (upstream keeps the version pinned between releases). Overlaying onto such
+    a target silently rolls those files back. This is the check that catches it.
+
+    Returns (relation, ahead) where relation is one of:
+      "same"      — HEAD == BASE_COMMIT (ideal; overlay is exact)
+      "ahead"     — target is `ahead` commits past BASE_COMMIT (DANGEROUS:
+                    overlay would clobber that drift on shared files)
+      "behind"    — target predates BASE_COMMIT
+      "diverged"  — neither is an ancestor of the other
+      "unknown"   — BASE_COMMIT not present in the target repo
+    Returns None when the target is not a git repo / git is unavailable
+    (fall back to the version-string guard only)."""
+    head = _git(target, "rev-parse", "HEAD")
+    if head is None:
+        return None
+    if head.startswith(BASE_COMMIT) or BASE_COMMIT.startswith(head):
+        return ("same", 0)
+    # Is BASE_COMMIT even known to this repo? (different fork / shallow clone)
+    if _git(target, "cat-file", "-t", BASE_COMMIT) != "commit":
+        return ("unknown", 0)
+    base_anc = _git(target, "merge-base", "--is-ancestor", BASE_COMMIT, "HEAD")
+    # --is-ancestor reports via exit code, surfaced by _git returning "" vs None
+    base_is_anc = base_anc is not None
+    head_is_anc = _git(target, "merge-base", "--is-ancestor", "HEAD", BASE_COMMIT) is not None
+    if base_is_anc and not head_is_anc:
+        ahead = _git(target, "rev-list", "--count", f"{BASE_COMMIT}..HEAD")
+        return ("ahead", int(ahead) if ahead and ahead.isdigit() else 0)
+    if head_is_anc and not base_is_anc:
+        return ("behind", 0)
+    return ("diverged", 0)
+
+
 def read_version(path: str) -> str | None:
     # Best-effort: pyproject.toml [project] version, else a VERSION file.
     pp = os.path.join(path, "pyproject.toml")
@@ -240,6 +310,29 @@ def do_install(target: str, dry_run: bool, force: bool) -> int:
     if not is_hermes_install(target):
         err(f"Not a Hermes install (missing run_agent.py/cli.py/toolsets.py): {target}")
         return 2
+
+    # Commit-ancestry guard (the precise check). The version string alone is
+    # too coarse — a target can match BUILT_FOR_VERSION yet sit far past
+    # BASE_COMMIT, in which case the overlay silently rolls shared files back.
+    skew = commit_skew(target)
+    if skew and not force:
+        relation, ahead = skew
+        if relation == "ahead":
+            warn(f"Target git HEAD is {ahead} commit(s) PAST this build's base "
+                 f"({BASE_COMMIT[:9]}). Overlaying would roll those files back to "
+                 "the base revision and can break the build (mismatched type/API "
+                 "contracts between overlaid and non-overlaid files).")
+            warn("Rebase this Caduceus build onto the target's HEAD and regenerate "
+                 "the overlay, or re-run with --force to proceed anyway "
+                 "(everything is backed up and reversible with --uninstall).")
+            return 3
+        if relation == "diverged":
+            warn(f"Target git HEAD has diverged from this build's base "
+                 f"({BASE_COMMIT[:9]}) — they share no linear history. The overlay "
+                 "may clobber the target's edits to shared files.")
+            warn("Re-run with --force to proceed anyway (reversible with --uninstall).")
+            return 3
+        # "behind"/"unknown"/"same" → fall through; version guard handles the rest.
 
     # Version guard (warn, don't block — every write is backed up).
     tv = read_version(target)
