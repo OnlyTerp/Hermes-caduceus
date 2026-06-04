@@ -4,9 +4,18 @@ Every ``agent()`` result is written to
 ``<session_dir>/workflows/<run_id>/journal.jsonl``, keyed by a stable hash of
 ``(normalized_prompt, opts, phase, call_index)``. When a run is resumed
 (``Workflow(scriptPath, resumeFromRunId=...)``), the journal of the prior run is
-loaded and the longest unchanged prefix of ``agent()`` calls returns cached
-results instantly; the first edited/new call and everything after runs live.
-Same script + same args ⇒ 100% cache hit.
+loaded and any ``agent()`` call whose key is unchanged returns its cached result
+instantly; an edited or new call runs live. Same script + same args ⇒ 100% cache
+hit. Only **successful** leaves are cached — a failed/empty leaf is never
+journaled as reusable, so resume re-runs it instead of replaying a stale ``None``.
+
+Caching is **per-call**, not prefix-based: a call hits the cache whenever its own
+``(prompt, opts, phase, call_index)`` matches. Editing one call's prompt without
+changing the number of ``agent()`` calls does not invalidate later, textually
+unchanged calls. In practice downstream prompts embed upstream output, so editing
+a middle call changes the keys of the calls that depend on it; if a downstream
+call's inputs depend on an edited upstream call *without* its text changing, bump
+the downstream prompt/args (or start a fresh run) so it re-executes.
 
 Per-agent transcripts are written as ``agent-<id>.jsonl`` so the desktop
 timeline scrubber can replay a run.
@@ -61,8 +70,13 @@ class Journal:
     # ---- recording ----------------------------------------------------
     def record(self, key: str, *, prompt: str, phase: Optional[str], result: Any,
                status: str, tokens: Dict[str, int], label: str) -> None:
+        # Only successful leaves are reusable. A failed/empty leaf is written to
+        # the journal for observability but is NOT cached for resume, so a
+        # transient failure never replays as a (wrong) cached ``None``.
+        reusable = status in ("done", "completed", "cached")
         with self._lock:
-            self._cache[key] = result
+            if reusable:
+                self._cache[key] = result
             if not self._path:
                 return
             row = {
@@ -104,7 +118,9 @@ def load_resume_cache(session_workflows_dir: str, resume_run_id: str) -> Dict[st
                 except Exception:
                     continue
                 key = row.get("key")
-                if key and row.get("status") in (None, "done", "completed", "cached"):
+                # Only replay successful leaves; failed/empty rows are skipped so
+                # resume re-runs them instead of serving a stale cached result.
+                if key and row.get("status") in ("done", "completed", "cached"):
                     cache[key] = row.get("result")
     except Exception:
         pass

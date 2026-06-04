@@ -110,6 +110,26 @@ def workflow_tool(
     if parent_agent is None:
         return json.dumps({"success": False, "error": "Workflow requires an orchestrating agent context."})
 
+    # Opt-in gate: the Loom only runs when Caduceus mode is active, so a stock
+    # (non-Caduceus) session can never spawn a multi-agent orchestration even
+    # though the tool is present in the schema. Prefer the live session state on
+    # the agent (the bare /caduceus toggle is session-scoped); fall back to the
+    # persisted config for non-CLI profiles that don't thread a CaduceusState.
+    cstate = getattr(parent_agent, "caduceus", None)
+    if cstate is not None:
+        caduceus_on = bool(getattr(cstate, "enabled", False))
+    else:
+        try:
+            from hermes_cli.config import load_config_readonly
+            caduceus_on = bool((load_config_readonly().get("caduceus") or {}).get("enabled"))
+        except Exception:
+            caduceus_on = False
+    if not caduceus_on:
+        return json.dumps({
+            "success": False,
+            "error": "Workflow requires Caduceus mode. Enable it with /caduceus, then retry.",
+        })
+
     # Resolve the caduceus.workflow runtime config.
     try:
         from hermes_cli.config import load_config_readonly
@@ -168,7 +188,10 @@ def workflow_tool(
 
 
 def check_requirements() -> bool:
-    # Always available — the standing opt-in policy in the description gates usage.
+    # Present in the schema, but the handler hard-gates execution on Caduceus
+    # being active (see workflow_tool above), so a stock session can never run
+    # the Loom. The standing opt-in policy in the description governs when the
+    # model reaches for it once Caduceus is on.
     return True
 
 

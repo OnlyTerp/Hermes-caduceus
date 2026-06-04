@@ -40,12 +40,14 @@ import sys
 # different version can clobber that version's changes to the shared core files
 # (cli.py, run_agent.py, ...). We warn (not block) since every write is backed up.
 BUILT_FOR_VERSION = "0.15.1"
-BASE_COMMIT = "b34ee8074"
+BASE_COMMIT = "aeec88c77ffcb5c3c201f771d5079ebdb199ea88"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The Caduceus change set (relative paths). New modules + modified core files +
-# desktop + docs + tests. Generated from `git diff --name-only <base>..caduceus`.
+# desktop + docs + tests. Generated from `git diff --name-only <base>..caduceus`
+# (base = BASE_COMMIT). Repo-meta (the installer itself, the top-level README,
+# .github/ CI, scripts/caduceus_verify.sh) is intentionally NOT overlaid.
 MANIFEST = [
     # New, isolated modules (the bulk of the feature)
     "agent/caduceus.py",
@@ -74,6 +76,8 @@ MANIFEST = [
     "gateway/run.py",
     "hermes_cli/commands.py",
     "hermes_cli/config.py",
+    "hermes_cli/model_switch.py",
+    "hermes_cli/models.py",
     "model_tools.py",
     "run_agent.py",
     "toolsets.py",
@@ -105,11 +109,26 @@ MANIFEST = [
     "docs/caduceus/eval/parity_eval.py",
     "docs/caduceus/eval/auto_router_selftest.py",
     "docs/caduceus/eval/ab_compare.py",
+    "docs/caduceus/assets/caduceus-architecture.png",
+    "docs/caduceus/assets/caduceus-architecture.svg",
+    "docs/caduceus/assets/caduceus-hero.png",
+    "docs/caduceus/assets/caduceus-hero.svg",
+    "docs/caduceus/assets/caduceus-loom.png",
+    "docs/caduceus/assets/caduceus-loom.svg",
+    "docs/caduceus/assets/caduceus-router.png",
+    "docs/caduceus/assets/caduceus-router.svg",
+    "docs/caduceus/assets/caduceus-theater.png",
+    "docs/caduceus/assets/caduceus-theater.svg",
     "tests/caduceus/__init__.py",
     "tests/caduceus/test_caduceus_state.py",
     "tests/caduceus/test_auto_router.py",
     "tests/caduceus/test_route_worker_model.py",
     "tests/caduceus/test_local_mode.py",
+    # Installer-only tests depend on install_caduceus.py, which is repo-meta and
+    # intentionally not overlaid into target installs.
+    "tests/hermes_cli/test_user_providers_model_switch.py",
+    "tests/run_agent/test_run_agent.py",
+    "tests/tools/test_delegate_leaf_streaming_timeout.py",
     "tests/workflow/__init__.py",
     "tests/workflow/test_loom_offline.py",
 ]
@@ -118,12 +137,13 @@ MANIFEST = [
 _MODIFIED_CORE = {
     "agent/agent_init.py", "agent/agent_runtime_helpers.py", "agent/conversation_loop.py",
     "agent/system_prompt.py", "agent/tool_executor.py", "cli.py", "gateway/run.py",
-    "hermes_cli/commands.py", "hermes_cli/config.py", "model_tools.py", "run_agent.py",
+    "hermes_cli/commands.py", "hermes_cli/config.py", "hermes_cli/model_switch.py",
+    "hermes_cli/models.py", "model_tools.py", "run_agent.py",
     "toolsets.py", "tools/delegate_tool.py", "tui_gateway/server.py",
     "apps/desktop/src/app/session/hooks/use-message-stream.ts",
     "apps/desktop/src/app/settings/constants.ts", "apps/desktop/src/app/shell/app-shell.tsx",
     "apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx",
-    "apps/desktop/src/store/workflow.ts",
+    "tests/hermes_cli/test_user_providers_model_switch.py", "tests/run_agent/test_run_agent.py",
 }
 
 BACKUP_ROOT = ".caduceus-backups"
@@ -186,6 +206,59 @@ def is_hermes_install(path: str) -> bool:
     return all(os.path.exists(os.path.join(path, f)) for f in ("run_agent.py", "cli.py", "toolsets.py"))
 
 
+def _git(target: str, *args: str) -> str | None:
+    """Run `git -C target <args>`; return stripped stdout, or None on any error
+    (not a repo, git missing, command failed). Best-effort — never raises."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        out = subprocess.run([git, "-C", target, *args],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def commit_skew(target: str) -> tuple[str, int] | None:
+    """Compare the target's git HEAD against this build's BASE_COMMIT.
+
+    The version string (pyproject) is too coarse: a target can read the same
+    version as BUILT_FOR_VERSION yet sit hundreds of commits past BASE_COMMIT
+    (upstream keeps the version pinned between releases). Overlaying onto such
+    a target silently rolls those files back. This is the check that catches it.
+
+    Returns (relation, ahead) where relation is one of:
+      "same"      — HEAD == BASE_COMMIT (ideal; overlay is exact)
+      "ahead"     — target is `ahead` commits past BASE_COMMIT (DANGEROUS:
+                    overlay would clobber that drift on shared files)
+      "behind"    — target predates BASE_COMMIT
+      "diverged"  — neither is an ancestor of the other
+      "unknown"   — BASE_COMMIT not present in the target repo
+    Returns None when the target is not a git repo / git is unavailable
+    (fall back to the version-string guard only)."""
+    head = _git(target, "rev-parse", "HEAD")
+    if head is None:
+        return None
+    if head.startswith(BASE_COMMIT) or BASE_COMMIT.startswith(head):
+        return ("same", 0)
+    # Is BASE_COMMIT even known to this repo? (different fork / shallow clone)
+    if _git(target, "cat-file", "-t", BASE_COMMIT) != "commit":
+        return ("unknown", 0)
+    base_anc = _git(target, "merge-base", "--is-ancestor", BASE_COMMIT, "HEAD")
+    # --is-ancestor reports via exit code, surfaced by _git returning "" vs None
+    base_is_anc = base_anc is not None
+    head_is_anc = _git(target, "merge-base", "--is-ancestor", "HEAD", BASE_COMMIT) is not None
+    if base_is_anc and not head_is_anc:
+        ahead = _git(target, "rev-list", "--count", f"{BASE_COMMIT}..HEAD")
+        return ("ahead", int(ahead) if ahead and ahead.isdigit() else 0)
+    if head_is_anc and not base_is_anc:
+        return ("behind", 0)
+    return ("diverged", 0)
+
+
 def read_version(path: str) -> str | None:
     # Best-effort: pyproject.toml [project] version, else a VERSION file.
     pp = os.path.join(path, "pyproject.toml")
@@ -240,6 +313,44 @@ def do_install(target: str, dry_run: bool, force: bool) -> int:
     if not is_hermes_install(target):
         err(f"Not a Hermes install (missing run_agent.py/cli.py/toolsets.py): {target}")
         return 2
+
+    # Commit-ancestry guard (the precise check). The version string alone is
+    # too coarse — a target can match BUILT_FOR_VERSION yet sit far past
+    # BASE_COMMIT, in which case the overlay silently rolls shared files back.
+    skew = commit_skew(target)
+    if skew and not force:
+        relation, ahead = skew
+        if relation == "ahead":
+            warn(f"Target git HEAD is {ahead} commit(s) PAST this build's base "
+                 f"({BASE_COMMIT[:9]}). Overlaying would roll those files back to "
+                 "the base revision and can break the build (mismatched type/API "
+                 "contracts between overlaid and non-overlaid files).")
+            warn("Rebase this Caduceus build onto the target's HEAD and regenerate "
+                 "the overlay, or re-run with --force to proceed anyway "
+                 "(everything is backed up and reversible with --uninstall).")
+            return 3
+        if relation == "diverged":
+            warn(f"Target git HEAD has diverged from this build's base "
+                 f"({BASE_COMMIT[:9]}) — they share no linear history. The overlay "
+                 "may clobber the target's edits to shared files.")
+            warn("Re-run with --force to proceed anyway (reversible with --uninstall).")
+            return 3
+        if relation == "behind":
+            warn(f"Target git HEAD predates this build's base ({BASE_COMMIT[:9]}). "
+                 "Overlaying newer Caduceus files onto older non-overlaid companions "
+                 "can break mismatched type/API contracts.")
+            warn("Update the target Hermes install to this base, or re-run with --force "
+                 "to proceed anyway (everything is backed up and reversible with --uninstall).")
+            return 3
+        if relation == "unknown":
+            warn(f"Target git history does not contain this build's base "
+                 f"({BASE_COMMIT[:9]}). This usually means a shallow clone, a "
+                 "different fork/history, or an install whose ancestry cannot be "
+                 "verified.")
+            warn("Fetch the base commit or re-run with --force to proceed anyway "
+                 "(everything is backed up and reversible with --uninstall).")
+            return 3
+        # "same" → fall through; version guard handles the rest.
 
     # Version guard (warn, don't block — every write is backed up).
     tv = read_version(target)
@@ -352,21 +463,81 @@ def do_uninstall(target: str) -> int:
             if os.path.exists(dst):
                 os.remove(dst)
                 removed += 1
-    ok(f"Uninstalled Caduceus: restored {restored} original file(s), removed {removed} added file(s).")
+    # The packaged app.asar is rewritten in place by --with-desktop and is not
+    # in the text-file manifest, so revert it from its own stock backup here.
+    asar_reverted = _restore_packaged_asar(target)
+    suffix = ", reverted the packaged app.asar to stock" if asar_reverted else ""
+    ok(f"Uninstalled Caduceus: restored {restored} original file(s), "
+       f"removed {removed} added file(s){suffix}.")
     info("Restart Hermes (and rebuild the desktop if you rebuilt it for Caduceus).")
     return 0
 
 
 def _find_packaged_asar(desktop: str) -> str | None:
-    """Locate a packaged app.asar under apps/desktop/release/*/resources/."""
+    """Locate a packaged app.asar under apps/desktop/release/.
+
+    electron-builder uses platform-specific layouts. Linux/Windows unpack to
+    ``release/<dir>/resources/app.asar`` while macOS nests the archive inside
+    ``release/<dir>/Hermes.app/Contents/Resources/app.asar``.
+    """
     release = os.path.join(desktop, "release")
     if not os.path.isdir(release):
         return None
-    for entry in os.listdir(release):
-        asar = os.path.join(release, entry, "resources", "app.asar")
+    candidates: list[str] = []
+    for entry in sorted(os.listdir(release)):
+        base = os.path.join(release, entry)
+        candidates.append(os.path.join(base, "resources", "app.asar"))
+        candidates.append(os.path.join(base, "Resources", "app.asar"))
+        if os.path.isdir(base):
+            for child in sorted(os.listdir(base)):
+                if child.endswith(".app"):
+                    candidates.append(
+                        os.path.join(base, child, "Contents", "Resources", "app.asar")
+                    )
+    for asar in candidates:
         if os.path.exists(asar):
             return asar
     return None
+
+
+def _restore_packaged_asar(target: str) -> int:
+    """Revert a Caduceus-repacked ``app.asar`` to its pre-Caduceus original.
+
+    A ``--with-desktop`` / ``--repack-only`` install rewrites the packaged
+    ``app.asar`` in place and stashes the stock archive at
+    ``app.asar.precaduceus.bak``. That backup is NOT part of the text-file
+    restore manifest, so uninstall must handle it here: copy the stock archive
+    back over ``app.asar`` and drop the timestamped ``.bak-<ts>`` snapshots. The
+    desktop app must be closed (it locks ``app.asar``). Best-effort — returns the
+    number of archives reverted (0 when there is no desktop bundle or no backup).
+    """
+    desktop = os.path.join(target, "apps", "desktop")
+    asar = _find_packaged_asar(desktop)
+    if not asar:
+        return 0
+    bak = asar + ".precaduceus.bak"
+    if not os.path.exists(bak):
+        return 0
+    try:
+        shutil.copy2(bak, asar)
+        os.remove(bak)
+    except OSError as e:
+        warn(f"Could not restore stock app.asar ({e}). The desktop app may be "
+             "running (it locks app.asar) — close it and re-run --uninstall.")
+        return 0
+    # Clean up the timestamped repack snapshots left next to the archive.
+    resources, base = os.path.dirname(asar), os.path.basename(asar)
+    try:
+        for entry in os.listdir(resources):
+            if entry.startswith(base + ".bak-"):
+                try:
+                    os.remove(os.path.join(resources, entry))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    info(f"Restored stock app.asar at {asar}")
+    return 1
 
 
 # ---------------------------------------------------------------------------
