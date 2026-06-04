@@ -113,6 +113,23 @@ _XAI_STATIC_FALLBACK: list[str] = [
 
 _XAI_TOP_MODEL = "grok-4.3"
 
+# Non-agentic xAI slugs (image/video generators) that must never appear in
+# the agent model picker — they break tool-calling sessions when selected.
+_XAI_NON_AGENTIC_IDS = frozenset({
+    "grok-imagine-image",
+    "grok-imagine-image-quality",
+    "grok-imagine-video",
+})
+
+
+def _xai_agentic_only(ids: list[str]) -> list[str]:
+    """Drop image/video-only Grok models from agent picker lists."""
+    return [
+        mid for mid in ids
+        if mid not in _XAI_NON_AGENTIC_IDS
+        and not str(mid).startswith("grok-imagine-")
+    ]
+
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
     """Pin the headline xAI model to the top of the curated list."""
@@ -138,7 +155,9 @@ def _xai_curated_models() -> list[str]:
         xai = data.get("xai") if isinstance(data, dict) else None
         models = xai.get("models") if isinstance(xai, dict) else None
         if isinstance(models, dict) and models:
-            ids = [mid for mid in models.keys() if isinstance(mid, str)]
+            ids = _xai_agentic_only(
+                [mid for mid in models.keys() if isinstance(mid, str)]
+            )
             if ids:
                 return _xai_promote_top(sorted(ids))
     except Exception:
