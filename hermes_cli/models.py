@@ -2080,7 +2080,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             access_token = None
         return get_codex_model_ids(access_token=access_token)
     if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+        return _xai_agentic_only(
+            list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+        )
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -2385,7 +2387,10 @@ def cached_provider_model_ids(
         and entry["models"]
         and (now - float(entry.get("at", 0))) < ttl_seconds
     ):
-        return list(entry["models"])
+        cached_models = list(entry["models"])
+        if normalized == "xai-oauth":
+            cached_models = _xai_agentic_only(cached_models)
+        return cached_models
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
