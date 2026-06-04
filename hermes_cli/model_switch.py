@@ -1652,11 +1652,27 @@ def list_authenticated_providers(
             # available, unless the provider explicitly opts out via
             # discover_models: false (e.g. dedicated endpoints that expose
             # the entire aggregator catalog via /models).
+            #
+            # When the user wrote an explicit ``models:`` whitelist, default
+            # to *not* discovering — otherwise multiple providers aimed at the
+            # same llama.cpp/vLLM host each inherit the full /v1/models dump
+            # (triplicated rows, wrong context, broken routing). Opt back in
+            # with ``discover_models: true`` when the endpoint is a dynamic
+            # catalog (CRS-style private gateways).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            discover = ep_cfg.get("discover_models", True)
+            has_explicit_whitelist = (
+                isinstance(cfg_models, dict) and bool(cfg_models)
+            ) or (
+                isinstance(cfg_models, list) and bool(cfg_models)
+            )
+            discover_raw = ep_cfg.get("discover_models")
+            if discover_raw is None:
+                discover = not has_explicit_whitelist
+            else:
+                discover = discover_raw
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:

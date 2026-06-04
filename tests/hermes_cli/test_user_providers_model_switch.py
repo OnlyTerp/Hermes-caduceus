@@ -156,6 +156,7 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
             "base_url": "http://127.0.0.1:3000/api/v1",
             "key_env": "CRS_TEST_KEY",
             "model": "old-configured-model",
+            "discover_models": True,
             "models": {
                 "old-configured-model": {"context_length": 200000},
             },
@@ -178,6 +179,45 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1")]
     assert user_prov["models"] == ["old-configured-model", "new-live-model"]
     assert user_prov["total_models"] == 2
+
+
+def test_list_authenticated_providers_respects_explicit_models_whitelist_by_default(monkeypatch):
+    """Shared local endpoints must not dump the full /v1/models list into every
+    provider row when ``models:`` already names the intended slug."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    def fail_fetch(*_a, **_k):
+        raise AssertionError("fetch_api_models should not run for explicit whitelist")
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fail_fetch)
+
+    user_providers = {
+        "local-qwen-27b": {
+            "name": "Qwen 27B local",
+            "base_url": "http://127.0.0.1:8090/v1",
+            "api_key": "local",
+            "model": "qwen36-27b-5090",
+            "models": {"qwen36-27b-5090": {"context_length": 229376}},
+        },
+        "local-qwen-35b": {
+            "name": "Qwen 35B local",
+            "base_url": "http://127.0.0.1:8092/v1",
+            "api_key": "local",
+            "model": "qwen36-35b-5090",
+            "models": {"qwen36-35b-5090": {"context_length": 163840}},
+        },
+    }
+
+    providers = list_authenticated_providers(
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+    by_slug = {p["slug"]: p for p in providers if p.get("is_user_defined")}
+
+    assert by_slug["local-qwen-27b"]["models"] == ["qwen36-27b-5090"]
+    assert by_slug["local-qwen-35b"]["models"] == ["qwen36-35b-5090"]
 
 
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
