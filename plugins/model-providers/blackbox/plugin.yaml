@@ -1,0 +1,5 @@
+name: blackbox-provider
+kind: model-provider
+version: 1.0.0
+description: Blackbox AI (OpenAI-compatible aggregator; hosts Nemotron reasoning)
+author: Nous Research

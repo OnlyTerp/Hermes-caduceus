@@ -4173,6 +4173,12 @@ class AIAgent:
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
+        # Blackbox aggregator hosts reasoning models (Nemotron). Its gateway
+        # accepts extra_body.reasoning; without this gate the BlackboxProfile's
+        # reasoning forwarding is silently dropped and heavy reasoning can
+        # starve the visible answer into an empty message.
+        if base_url_host_matches(self._base_url_lower, "api.blackbox.ai"):
+            return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
